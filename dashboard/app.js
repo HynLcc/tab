@@ -508,8 +508,8 @@ function renderOpenTabsMissionCard(mission, missionIndex) {
     const display = label.length > 45 ? label.slice(0, 45) + '…' : label;
     const dupeCount = dupeMap[tab.url];
     const dupeTag = dupeCount ? ` <span style="color:var(--accent-amber);font-weight:600">(${dupeCount}x)</span>` : '';
-    return `<span class="page-chip clickable" data-action="focus-tab" data-tab-url="${(tab.url || '').replace(/"/g, '&quot;')}" title="${label.replace(/"/g, '&quot;')}">${display}${dupeTag}<button class="chip-close" data-action="close-single-tab" data-tab-url="${(tab.url || '').replace(/"/g, '&quot;')}" title="Close this tab">&times;</button></span>`;
-  }).join('') + (extraCount > 0 ? `<span class="page-chip">+${extraCount} more</span>` : '');
+    return `<span class="page-chip clickable" data-action="focus-tab" data-tab-url="${(tab.url || '').replace(/"/g, '&quot;')}" title="${label.replace(/"/g, '&quot;')}"><span class="chip-text">${display}${dupeTag}</span><button class="chip-close" data-action="close-single-tab" data-tab-url="${(tab.url || '').replace(/"/g, '&quot;')}" title="Close this tab">&times;</button></span>`;
+  }).join('') + (extraCount > 0 ? `<span class="page-chip"><span class="chip-text">+${extraCount} more</span></span>` : '');
 
   // Use a stable ID based on mission name (not array index, which shifts when
   // earlier missions are closed). This way closing mission #2 doesn't break
@@ -840,8 +840,8 @@ function renderDomainCard(group, groupIndex) {
       ? ` <span style="color:var(--accent-amber);font-weight:600">(${count}x)</span>`
       : '';
     const chipStyle = count > 1 ? ' style="border-color: rgba(200, 113, 58, 0.3);"' : '';
-    return `<span class="page-chip clickable"${chipStyle} data-action="focus-tab" data-tab-url="${(tab.url || '').replace(/"/g, '&quot;')}" title="${label.replace(/"/g, '&quot;')}">${display}${dupeTag}<button class="chip-close" data-action="close-single-tab" data-tab-url="${(tab.url || '').replace(/"/g, '&quot;')}" title="Close this tab">&times;</button></span>`;
-  }).join('') + (extraCount > 0 ? `<span class="page-chip">+${extraCount} more</span>` : '');
+    return `<span class="page-chip clickable"${chipStyle} data-action="focus-tab" data-tab-url="${(tab.url || '').replace(/"/g, '&quot;')}" title="${label.replace(/"/g, '&quot;')}"><span class="chip-text">${display}${dupeTag}</span><button class="chip-close" data-action="close-single-tab" data-tab-url="${(tab.url || '').replace(/"/g, '&quot;')}" title="Close this tab">&times;</button></span>`;
+  }).join('') + (extraCount > 0 ? `<span class="page-chip"><span class="chip-text">+${extraCount} more</span></span>` : '');
 
   // Use amber status bar if there are duplicates
   const statusBarClass = hasDupes ? 'active' : 'neutral';
