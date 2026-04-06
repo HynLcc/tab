@@ -15,6 +15,31 @@
 <div class="container">
 
   <!-- ================================================================
+       UPDATE BANNER — appears when a new version is available on GitHub
+       Hidden by default; app.js shows it if /api/update-status returns
+       updateAvailable: true. Dismissible for the session with the X button.
+       ================================================================ -->
+  <div id="updateBanner" style="display:none" class="update-banner" role="alert" aria-live="polite">
+    <div class="update-banner-left">
+      <!-- Arrow-up-circle icon (Heroicons outline) — signals "something new" -->
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="update-banner-icon">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M15 11.25l-3-3m0 0l-3 3m3-3v7.5M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />
+      </svg>
+      <span class="update-banner-text">A new version of Tab Out is available.</span>
+    </div>
+    <div class="update-banner-right">
+      <!-- "Update now" button — triggers POST /api/update -->
+      <button class="update-banner-btn" id="updateNowBtn">Update now</button>
+      <!-- Dismiss button — hides the banner for this session only -->
+      <button class="update-banner-dismiss" id="updateBannerDismiss" aria-label="Dismiss update notification">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- ================================================================
        HEADER — greeting on the left
        The scatter meter has been removed. Only the greeting and date remain.
        ================================================================ -->

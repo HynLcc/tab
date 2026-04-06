@@ -1616,8 +1616,156 @@ async function updateStaleCount() {
 
 
 /* ----------------------------------------------------------------
+   AUTO-UPDATE BANNER
+
+   On page load, quietly asks the server "is a new version available?"
+   If yes, slides in a thin banner at the top of the page.
+
+   The banner has two buttons:
+     - "Update now"  → calls POST /api/update (git pull + npm install)
+     - X (dismiss)   → hides the banner for this browser session only
+
+   This is intentionally low-key. The banner is informational, not urgent.
+   It should never get in the way of using the dashboard.
+   ---------------------------------------------------------------- */
+
+/**
+ * checkForUpdates()
+ *
+ * Fetches /api/update-status. If an update is available, shows the banner.
+ * Runs once on page load — no polling needed since the server handles that.
+ */
+async function checkForUpdates() {
+  try {
+    const res = await fetch('/api/update-status');
+    if (!res.ok) return; // server error — fail silently, don't show banner
+
+    const { updateAvailable } = await res.json();
+
+    if (updateAvailable) {
+      showUpdateBanner();
+    }
+  } catch {
+    // Network error or JSON parse failure — fail silently.
+    // The update banner is a convenience feature; it should never crash the page.
+  }
+}
+
+/**
+ * showUpdateBanner()
+ *
+ * Makes the update banner visible by setting display:flex.
+ * The CSS animation (bannerSlideIn) then handles the visual entrance.
+ */
+function showUpdateBanner() {
+  const banner = document.getElementById('updateBanner');
+  if (banner) {
+    banner.style.display = 'flex';
+  }
+}
+
+/**
+ * hideUpdateBanner()
+ *
+ * Hides the update banner with a fade-out animation.
+ * Used by both the dismiss button and after a successful update.
+ */
+function hideUpdateBanner() {
+  const banner = document.getElementById('updateBanner');
+  if (!banner) return;
+
+  // Fade out smoothly before removing from view
+  banner.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+  banner.style.opacity = '0';
+  banner.style.transform = 'translateY(-4px)';
+
+  setTimeout(() => {
+    banner.style.display = 'none';
+    // Reset for safety (in case it's ever shown again)
+    banner.style.opacity = '';
+    banner.style.transform = '';
+    banner.style.transition = '';
+  }, 300);
+}
+
+// ── Update banner event handlers ──────────────────────────────────────────────
+
+// "Update now" button: runs git pull + npm install via POST /api/update
+document.getElementById('updateNowBtn')?.addEventListener('click', async () => {
+  const btn = document.getElementById('updateNowBtn');
+  if (!btn) return;
+
+  // Show loading state — disable the button so it can't be double-clicked
+  const originalText = btn.textContent;
+  btn.textContent = 'Updating…';
+  btn.disabled = true;
+
+  try {
+    const res = await fetch('/api/update', { method: 'POST' });
+
+    if (!res.ok) {
+      // HTTP error from the server (e.g. 500)
+      btn.textContent = 'Update failed';
+      btn.style.background = 'var(--accent-rose)';
+      setTimeout(() => {
+        btn.textContent = originalText;
+        btn.style.background = '';
+        btn.disabled = false;
+      }, 3000);
+      return;
+    }
+
+    const { success, message } = await res.json();
+
+    if (success) {
+      // Success! Replace the whole banner content with a success message.
+      // The user still needs to restart the server manually.
+      const bannerText = document.querySelector('.update-banner-text');
+      const bannerRight = document.querySelector('.update-banner-right');
+
+      if (bannerText) bannerText.textContent = message;
+      if (bannerRight) {
+        // Replace the action buttons with a plain "Got it" button
+        bannerRight.innerHTML = `
+          <button class="update-banner-btn" onclick="hideUpdateBanner()" style="background:var(--muted)">Got it</button>
+        `;
+      }
+    } else {
+      // The update command ran but returned an error (e.g. merge conflict)
+      btn.textContent = 'Failed — see console';
+      btn.style.background = 'var(--accent-rose)';
+      console.error('[TMC] Update failed:', message);
+      setTimeout(() => {
+        btn.textContent = originalText;
+        btn.style.background = '';
+        btn.disabled = false;
+      }, 4000);
+    }
+
+  } catch (err) {
+    // Network error
+    btn.textContent = 'Network error';
+    btn.style.background = 'var(--accent-rose)';
+    console.error('[TMC] Update request failed:', err);
+    setTimeout(() => {
+      btn.textContent = originalText;
+      btn.style.background = '';
+      btn.disabled = false;
+    }, 3000);
+  }
+});
+
+// Dismiss X button: hides the banner for this session
+document.getElementById('updateBannerDismiss')?.addEventListener('click', () => {
+  hideUpdateBanner();
+});
+
+
+/* ----------------------------------------------------------------
    INITIALIZE
 
    When the page loads, paint the dashboard immediately.
+   Also check quietly if an update is available.
    ---------------------------------------------------------------- */
+checkForUpdates(); // async — won't block dashboard render
 renderDashboard();
