@@ -725,64 +725,8 @@ const ICONS = {
 
 
 /* ----------------------------------------------------------------
-   SCATTER BAR RENDERER
-
-   The scatter bar is the 10-dot "focus level" indicator in the
-   top-right. It shows how spread out Zara's attention is across
-   missions. More missions = more scatter = more dots filled = redder.
    ---------------------------------------------------------------- */
 
-/**
- * renderScatterBar(missionCount)
- *
- * Fills the 10 scatter dots based on how many active missions exist.
- * Over 5 missions = "high scatter" (red dots).
- */
-/**
- * renderScatterBar(tabCount, domainCount)
- *
- * Focus level is based on how many unique domains you're spread across.
- * The bar shows 10 dots scaled to the domain count.
- * 1-3 domains = focused (green), 4-6 = moderate (amber), 7+ = scattered (red)
- */
-function renderScatterBar(tabCount, domainCount) {
-  const barEl = document.getElementById('scatterBar');
-  const captionEl = document.getElementById('scatterCaption');
-  if (!barEl || !captionEl) return;
-
-  const isHigh = domainCount > 6;
-  const isMod = domainCount > 3;
-
-  let dotsHtml = '';
-  for (let i = 0; i < 10; i++) {
-    const filled = i < Math.min(domainCount, 10);
-    const highClass = filled && isHigh ? ' high' : '';
-    dotsHtml += `<div class="scatter-dot${filled ? ' filled' : ''}${highClass}"></div>`;
-  }
-  barEl.innerHTML = dotsHtml;
-
-  let level = 'focused';
-  if (isHigh) level = 'scattered';
-  else if (isMod) level = 'moderate';
-
-  captionEl.textContent = `${tabCount} tab${tabCount !== 1 ? 's' : ''} across ${domainCount} site${domainCount !== 1 ? 's' : ''} — ${level}`;
-  captionEl.style.color = isHigh ? 'var(--status-abandoned)' : isMod ? 'var(--accent-amber)' : 'var(--status-active)';
-}
-
-
-/**
- * renderPersonalMessage(message)
- *
- * Renders the AI's witty one-liner above the mission cards in the AI view.
- * This looks like a handwritten note or a quote — italic text with a warm
- * left border, referencing the actual tabs the user has open.
- *
- * The element it writes into (#aiPersonalMessage) is injected into the
- * section header area just above the missions grid. If the element doesn't
- * exist yet in the DOM, we create it and insert it there.
- *
- * If message is null or empty, we hide the element gracefully.
- */
 /* ----------------------------------------------------------------
    IN-MEMORY STORE FOR OPEN-TAB GROUPS
 
@@ -1123,13 +1067,9 @@ function renderArchiveItem(item) {
 
 
 /* ----------------------------------------------------------------
-   MAIN DASHBOARD RENDERERS
+   MAIN DASHBOARD RENDERER
 
-   Two modes:
-   1. renderStaticDashboard() — instant, no AI call. Groups tabs by domain.
-      Shows "Most visited" sites from history. Offers "Organize with AI".
-   2. renderAIDashboard()     — calls DeepSeek to cluster tabs into missions.
-      Replaces the domain view with AI-curated mission cards.
+   renderStaticDashboard() — groups open tabs by domain. No AI calls.
    ---------------------------------------------------------------- */
 
 /**
@@ -1666,13 +1606,6 @@ document.addEventListener('input', async (e) => {
    ACTION HELPERS
    ---------------------------------------------------------------- */
 
-/**
- * handleCloseAllStale()
- *
- * Closes all tabs that weren't assigned to any open-tab mission.
- * With the new architecture, "stale" means tabs that somehow slipped
- * through the AI clustering (shouldn't happen, but could with edge cases).
- */
 /**
  * fetchMissionById(missionId)
  *
