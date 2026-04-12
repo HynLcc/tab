@@ -938,8 +938,7 @@ function renderDomainCard(group, groupIndex) {
       <div class="status-bar"${statusBarStyle}></div>
       <div class="mission-content">
         <div class="mission-top">
-          <span class="mission-name">${isLanding ? 'Landing pages' : friendlyDomain(group.domain)}</span>
-          ${isLanding ? '<span class="mission-tag neutral">Homepages & feeds</span>' : ''}
+          <span class="mission-name">${isLanding ? 'Homepages' : friendlyDomain(group.domain)}</span>
           ${tabBadge}
           ${dupeBadge}
         </div>
@@ -1446,7 +1445,7 @@ document.addEventListener('click', async (e) => {
     const idx = domainGroups.indexOf(group);
     if (idx !== -1) domainGroups.splice(idx, 1);
 
-    const groupLabel = group.domain === '__landing-pages__' ? 'Landing pages' : friendlyDomain(group.domain);
+    const groupLabel = group.domain === '__landing-pages__' ? 'Homepages' : friendlyDomain(group.domain);
     showToast(`Closed ${urls.length} tab${urls.length !== 1 ? 's' : ''} from ${groupLabel}`);
 
     // Update footer tab count
