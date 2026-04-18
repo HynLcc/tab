@@ -106,12 +106,26 @@
         <div class="stat-label">Open tabs</div>
       </div>
     </div>
-    <div class="last-refresh">
-      <span style="color: var(--muted); font-size: 11px;"><a href="https://github.com/zarazhangrui/tab-out" target="_top" style="color: var(--muted); text-decoration: underline; text-underline-offset: 2px;">Tab Out</a> by <a href="https://x.com/zarazhangrui" target="_top" style="color: var(--muted); text-decoration: underline; text-underline-offset: 2px;">Zara</a></span>
-    </div>
   </footer>
 
 </div><!-- end .container -->
+
+<div class="dock-control" id="dockControl">
+  <button class="dock-toggle" data-action="toggle-dock-panel" id="dockToggle" aria-label="Dock controls" title="Dock controls">
+    <span class="dock-swatch" id="dockSwatch"></span>
+  </button>
+  <div class="dock-panel" id="dockPanel">
+    <div class="dock-panel-header">
+      <label class="dock-label" for="dockColorInput">Dock</label>
+      <button class="dock-more" type="button" disabled title="More dock tools later">More</button>
+    </div>
+    <div class="dock-row">
+      <input type="color" id="dockColorInput" value="#e3ead7">
+      <button class="dock-reset" data-action="reset-dock-color">Reset</button>
+    </div>
+    <div class="dock-hint">Pick a browser-matching color.</div>
+  </div>
+</div>
 
 <!-- ================================================================
      TOAST — floats above everything, used for action confirmations

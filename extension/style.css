@@ -8,6 +8,7 @@
   --ink: #1a1613;
   --paper: #f8f5f0;
   --warm-gray: #e8e2da;
+  --browser-accent: #e3ead7;
   --muted: #9a918a;
   --accent-amber: #c8713a;
   --accent-sage: #5a7a62;
@@ -24,7 +25,7 @@
 
 body {
   font-family: 'DM Sans', sans-serif;
-  background: var(--paper);
+  background: var(--browser-accent);
   color: var(--ink);
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
@@ -59,7 +60,7 @@ header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  margin-bottom: 48px;
+  margin-bottom: 16px;
   padding-bottom: 24px;
   border-bottom: 1px solid var(--warm-gray);
 }
@@ -74,10 +75,11 @@ header {
 }
 
 .header-left .date {
-  font-size: 13px;
+  font-family: 'Newsreader', serif;
+  font-size: 18px;
   color: var(--muted);
   font-weight: 400;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.2px;
   text-transform: uppercase;
 }
 
@@ -294,10 +296,12 @@ header {
 }
 
 .mission-name {
-  font-weight: 600;
-  font-size: 15px;
+  font-family: 'Newsreader', serif;
+  font-weight: 500;
+  font-size: 18px;
+  line-height: 1.08;
   color: var(--ink);
-  letter-spacing: -0.2px;
+  letter-spacing: -0.35px;
 }
 
 .mission-tag {
@@ -604,8 +608,164 @@ footer {
   padding-top: 20px;
   border-top: 1px solid var(--warm-gray);
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
+}
+
+.dock-control {
+  position: fixed;
+  left: 24px;
+  bottom: 24px;
+  z-index: 20;
+}
+
+.dock-toggle,
+.dock-reset,
+.dock-more {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+}
+
+.dock-toggle {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: transparent;
+  box-shadow: none;
+  opacity: 0.58;
+}
+
+.dock-toggle:hover,
+.dock-toggle:focus-visible,
+.dock-reset:hover,
+.dock-more:hover {
+  transform: translateY(-1px);
+  opacity: 1;
+}
+
+.dock-toggle:focus-visible {
+  outline: none;
+}
+
+.dock-swatch {
+  display: block;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--browser-accent);
+  border: 1px solid rgba(26, 22, 19, 0.14);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.42),
+    0 0 0 5px rgba(255, 253, 249, 0.38);
+}
+
+.dock-panel {
+  position: absolute;
+  left: 0;
+  bottom: 28px;
+  width: 210px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(26, 22, 19, 0.08);
+  background: rgba(255, 253, 249, 0.86);
+  box-shadow: 0 10px 24px rgba(26, 22, 19, 0.1);
+  backdrop-filter: blur(12px);
+  opacity: 0;
+  transform: translateY(10px) scale(0.84);
+  transform-origin: left bottom;
+  pointer-events: none;
+  transition:
+    opacity 0.18s ease,
+    transform 0.34s cubic-bezier(0.18, 0.9, 0.22, 1.28);
+}
+
+.dock-control.open .dock-panel {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+.dock-control.open .dock-toggle {
+  opacity: 0.92;
+}
+
+.dock-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.dock-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.dock-more {
+  padding: 4px 8px;
+  border: 1px solid rgba(26, 22, 19, 0.06);
+  border-radius: 999px;
+  background: rgba(26, 22, 19, 0.02);
+  color: rgba(26, 22, 19, 0.42);
+  cursor: default;
+}
+
+.dock-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#dockColorInput {
+  width: 44px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+#dockColorInput::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+#dockColorInput::-webkit-color-swatch {
+  border: 1px solid rgba(26, 22, 19, 0.12);
+  border-radius: 8px;
+}
+
+.dock-reset {
+  padding: 6px 10px;
+  border: 1px solid rgba(26, 22, 19, 0.08);
+  background: rgba(26, 22, 19, 0.03);
+  color: var(--ink);
+  border-radius: 999px;
+}
+
+.dock-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+  opacity: 0.82;
+}
+
+@media (max-width: 900px) {
+  .dock-control {
+    left: 16px;
+    bottom: 16px;
+  }
 }
 
 .footer-stats {

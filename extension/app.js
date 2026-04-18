@@ -15,6 +15,8 @@
 
 'use strict';
 
+const DEFAULT_THEME_COLOR = '#e3ead7';
+
 
 /* ----------------------------------------------------------------
    CHROME TABS — Direct API Access
@@ -25,6 +27,78 @@
 
 // All open tabs — populated by fetchOpenTabs()
 let openTabs = [];
+
+function normalizeHexColor(value) {
+  if (typeof value !== 'string') return DEFAULT_THEME_COLOR;
+  const trimmed = value.trim();
+  if (/^#[0-9a-f]{6}$/i.test(trimmed)) return trimmed.toLowerCase();
+  if (/^#[0-9a-f]{3}$/i.test(trimmed)) {
+    return '#' + trimmed.slice(1).split('').map(ch => ch + ch).join('').toLowerCase();
+  }
+  return DEFAULT_THEME_COLOR;
+}
+
+function hexToRgb(hex) {
+  const normalized = normalizeHexColor(hex);
+  return {
+    r: parseInt(normalized.slice(1, 3), 16),
+    g: parseInt(normalized.slice(3, 5), 16),
+    b: parseInt(normalized.slice(5, 7), 16),
+  };
+}
+
+function rgbToHex({ r, g, b }) {
+  return '#' + [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('');
+}
+
+function mixHexColors(base, target, weight = 0.5) {
+  const a = hexToRgb(base);
+  const b = hexToRgb(target);
+  return rgbToHex({
+    r: a.r * (1 - weight) + b.r * weight,
+    g: a.g * (1 - weight) + b.g * weight,
+    b: a.b * (1 - weight) + b.b * weight,
+  });
+}
+
+function applyThemeColor(color) {
+  const normalized = normalizeHexColor(color);
+  const root = document.documentElement;
+
+  root.style.setProperty('--browser-accent', normalized);
+
+  const input = document.getElementById('dockColorInput');
+  if (input && input.value !== normalized) input.value = normalized;
+}
+
+async function loadThemeColor() {
+  try {
+    const { appearance = {} } = await chrome.storage.local.get('appearance');
+    applyThemeColor(appearance.themeColor || DEFAULT_THEME_COLOR);
+  } catch {
+    applyThemeColor(DEFAULT_THEME_COLOR);
+  }
+}
+
+async function saveThemeColor(color) {
+  const normalized = normalizeHexColor(color);
+  applyThemeColor(normalized);
+  const { appearance = {} } = await chrome.storage.local.get('appearance');
+  await chrome.storage.local.set({
+    appearance: {
+      ...appearance,
+      themeColor: normalized,
+    },
+  });
+}
+
+async function resetThemeColor() {
+  applyThemeColor(DEFAULT_THEME_COLOR);
+  const { appearance = {} } = await chrome.storage.local.get('appearance');
+  const next = { ...appearance };
+  delete next.themeColor;
+  await chrome.storage.local.set({ appearance: next });
+}
 
 /**
  * fetchOpenTabs()
@@ -287,55 +361,6 @@ async function dismissSavedTab(id) {
 /* ----------------------------------------------------------------
    UI HELPERS
    ---------------------------------------------------------------- */
-
-/**
- * playCloseSound()
- *
- * Plays a clean "swoosh" sound when tabs are closed.
- * Built entirely with the Web Audio API — no sound files needed.
- * A filtered noise sweep that descends in pitch, like air moving.
- */
-function playCloseSound() {
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const t = ctx.currentTime;
-
-    // Swoosh: shaped white noise through a sweeping bandpass filter
-    const duration = 0.25;
-    const buffer = ctx.createBuffer(1, ctx.sampleRate * duration, ctx.sampleRate);
-    const data = buffer.getChannelData(0);
-
-    // Generate noise with a natural envelope (quick attack, smooth decay)
-    for (let i = 0; i < data.length; i++) {
-      const pos = i / data.length;
-      // Envelope: ramps up fast in first 10%, then fades out smoothly
-      const env = pos < 0.1 ? pos / 0.1 : Math.pow(1 - (pos - 0.1) / 0.9, 1.5);
-      data[i] = (Math.random() * 2 - 1) * env;
-    }
-
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-
-    // Bandpass filter sweeps from high to low — creates the "swoosh" character
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'bandpass';
-    filter.Q.value = 2.0;
-    filter.frequency.setValueAtTime(4000, t);
-    filter.frequency.exponentialRampToValueAtTime(400, t + duration);
-
-    // Volume
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.15, t);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + duration);
-
-    source.connect(filter).connect(gain).connect(ctx.destination);
-    source.start(t);
-
-    setTimeout(() => ctx.close(), 500);
-  } catch {
-    // Audio not supported — fail silently
-  }
-}
 
 /**
  * shootConfetti(x, y)
@@ -1184,14 +1209,31 @@ async function renderDashboard() {
 document.addEventListener('click', async (e) => {
   // Walk up the DOM to find the nearest element with data-action
   const actionEl = e.target.closest('[data-action]');
-  if (!actionEl) return;
+  if (!actionEl) {
+    const dockControl = document.getElementById('dockControl');
+    if (dockControl && !dockControl.contains(e.target)) {
+      dockControl.classList.remove('open');
+    }
+    return;
+  }
 
   const action = actionEl.dataset.action;
+
+  if (action === 'toggle-dock-panel') {
+    const dockControl = document.getElementById('dockControl');
+    if (dockControl) dockControl.classList.toggle('open');
+    return;
+  }
+
+  if (action === 'reset-dock-color') {
+    await resetThemeColor();
+    showToast('Theme reset');
+    return;
+  }
 
   // ---- Close duplicate Tab Out tabs ----
   if (action === 'close-tabout-dupes') {
     await closeTabOutDupes();
-    playCloseSound();
     const banner = document.getElementById('tabOutDupeBanner');
     if (banner) {
       banner.style.transition = 'opacity 0.4s';
@@ -1232,8 +1274,6 @@ document.addEventListener('click', async (e) => {
     const match   = allTabs.find(t => t.url === tabUrl);
     if (match) await chrome.tabs.remove(match.id);
     await fetchOpenTabs();
-
-    playCloseSound();
 
     // Animate the chip row out
     const chip = actionEl.closest('.page-chip');
@@ -1360,7 +1400,6 @@ document.addEventListener('click', async (e) => {
     }
 
     if (card) {
-      playCloseSound();
       animateCardOut(card);
     }
 
@@ -1383,7 +1422,6 @@ document.addEventListener('click', async (e) => {
     if (urls.length === 0) return;
 
     await closeDuplicateTabs(urls, true);
-    playCloseSound();
 
     // Hide the dedup button
     actionEl.style.transition = 'opacity 0.2s';
@@ -1418,7 +1456,6 @@ document.addEventListener('click', async (e) => {
       .filter(t => t.url && !t.url.startsWith('chrome') && !t.url.startsWith('about:'))
       .map(t => t.url);
     await closeTabsByUrls(allUrls);
-    playCloseSound();
 
     document.querySelectorAll('#openTabsMissions .mission-card').forEach(c => {
       shootConfetti(
@@ -1447,6 +1484,11 @@ document.addEventListener('click', (e) => {
 
 // ---- Archive search — filter archived items as user types ----
 document.addEventListener('input', async (e) => {
+  if (e.target.id === 'dockColorInput') {
+    await saveThemeColor(e.target.value);
+    return;
+  }
+
   if (e.target.id !== 'archiveSearch') return;
 
   const q = e.target.value.trim().toLowerCase();
@@ -1475,8 +1517,15 @@ document.addEventListener('input', async (e) => {
   }
 });
 
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const dockControl = document.getElementById('dockControl');
+  if (dockControl) dockControl.classList.remove('open');
+});
+
 
 /* ----------------------------------------------------------------
    INITIALIZE
    ---------------------------------------------------------------- */
+loadThemeColor();
 renderDashboard();

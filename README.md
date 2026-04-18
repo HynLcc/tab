@@ -1,10 +1,22 @@
-# Tab Out
+# Tab
 
 **Keep tabs on your tabs.**
 
-Tab Out is a Chrome extension that replaces your new tab page with a dashboard of everything you have open. Tabs are grouped by domain, with homepages (Gmail, X, LinkedIn, etc.) pulled into their own group. Close tabs with a satisfying swoosh + confetti.
+Tab is a Chrome extension that replaces your new tab page with a dashboard of everything you have open. Tabs are grouped by domain, with homepages (Gmail, X, LinkedIn, etc.) pulled into their own group. Close tabs with a confetti burst.
 
 No server. No account. No external API calls. Just a Chrome extension.
+
+---
+
+## Attribution
+
+This repository is a modified derivative of [Tab Out](https://github.com/zarazhangrui/tab-out) by Zara Zhang.
+
+- Original project license: MIT
+- This repository preserves the original MIT license and attribution
+- Changes here include renaming the extension to `Tab`, UI adjustments, sound removal, manual browser-color matching, and the new `dock-panel` entry point for future controls
+
+If you reuse or redistribute this repo, keep the original copyright and license notice.
 
 ---
 
@@ -12,9 +24,7 @@ No server. No account. No external API calls. Just a Chrome extension.
 
 Send your coding agent (Claude Code, Codex, etc.) this repo and say **"install this"**:
 
-```
-https://github.com/zarazhangrui/tab-out
-```
+`<this repository URL>`
 
 The agent will walk you through it. Takes about 1 minute.
 
@@ -24,7 +34,7 @@ The agent will walk you through it. Takes about 1 minute.
 
 - **See all your tabs at a glance** on a clean grid, grouped by domain
 - **Homepages group** pulls Gmail inbox, X home, YouTube, LinkedIn, GitHub homepages into one card
-- **Close tabs with style** with swoosh sound + confetti burst
+- **Close tabs with style** with a confetti burst
 - **Duplicate detection** flags when you have the same page open twice, with one-click cleanup
 - **Click any tab to jump to it** across windows, no new tab opened
 - **Save for later** bookmark tabs to a checklist before closing them
@@ -40,7 +50,7 @@ The agent will walk you through it. Takes about 1 minute.
 **1. Clone the repo**
 
 ```bash
-git clone https://github.com/zarazhangrui/tab-out.git
+git clone <this repository URL>
 ```
 
 **2. Load the Chrome extension**
@@ -52,7 +62,7 @@ git clone https://github.com/zarazhangrui/tab-out.git
 
 **3. Open a new tab**
 
-You'll see Tab Out.
+You'll see Tab.
 
 ---
 
@@ -60,10 +70,10 @@ You'll see Tab Out.
 
 ```
 You open a new tab
-  -> Tab Out shows your open tabs grouped by domain
+  -> Tab shows your open tabs grouped by domain
   -> Homepages (Gmail, X, etc.) get their own group at the top
   -> Click any tab title to jump to it
-  -> Close groups you're done with (swoosh + confetti)
+  -> Close groups you're done with (confetti)
   -> Save tabs for later before closing them
 ```
 
@@ -77,7 +87,6 @@ Everything runs inside the Chrome extension. No external server, no API calls, n
 |------|-----|
 | Extension | Chrome Manifest V3 |
 | Storage | chrome.storage.local |
-| Sound | Web Audio API (synthesized, no files) |
 | Animations | CSS transitions + JS confetti particles |
 
 ---
@@ -88,4 +97,4 @@ MIT
 
 ---
 
-Built by [Zara](https://x.com/zarazhangrui)
+Originally created by [Zara Zhang](https://x.com/zarazhangrui), modified in this repository under the MIT license.
