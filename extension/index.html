@@ -116,14 +116,51 @@
   </button>
   <div class="dock-panel" id="dockPanel">
     <div class="dock-panel-header">
-      <label class="dock-label" for="dockColorInput">Dock</label>
-      <button class="dock-more" type="button" disabled title="More dock tools later">More</button>
+      <div>
+        <div class="dock-label">Dock</div>
+        <div class="dock-subtitle">Tune the room before you tab out.</div>
+      </div>
+      <button class="dock-more" type="button" data-action="refresh-dashboard" title="Refresh tab inventory">Refresh</button>
     </div>
-    <div class="dock-row">
-      <input type="color" id="dockColorInput" value="#e3ead7">
-      <button class="dock-reset" data-action="reset-dock-color">Reset</button>
+    <div class="dock-section">
+      <div class="dock-section-title">Theme</div>
+      <div class="dock-row dock-row-theme">
+        <input type="color" id="dockColorInput" value="#e3ead7">
+        <button class="dock-reset" data-action="reset-dock-color">Reset</button>
+      </div>
     </div>
-    <div class="dock-hint">Pick a browser-matching color.</div>
+    <div class="dock-section">
+      <div class="dock-section-title">Density</div>
+      <div class="dock-segmented">
+        <button class="dock-chip" type="button" data-action="set-dock-density" data-density="compact">Compact</button>
+        <button class="dock-chip" type="button" data-action="set-dock-density" data-density="cozy">Cozy</button>
+        <button class="dock-chip" type="button" data-action="set-dock-density" data-density="airy">Airy</button>
+      </div>
+    </div>
+    <div class="dock-section">
+      <div class="dock-section-title">Sort</div>
+      <div class="dock-segmented">
+        <button class="dock-chip" type="button" data-action="set-dock-sort" data-sort="smart">Smart</button>
+        <button class="dock-chip" type="button" data-action="set-dock-sort" data-sort="size">Size</button>
+        <button class="dock-chip" type="button" data-action="set-dock-sort" data-sort="alpha">A-Z</button>
+      </div>
+    </div>
+    <div class="dock-section">
+      <div class="dock-section-title">Filter</div>
+      <div class="dock-segmented">
+        <button class="dock-chip" type="button" data-action="set-dock-filter" data-filter="all">Everything</button>
+        <button class="dock-chip" type="button" data-action="set-dock-filter" data-filter="duplicates">Dupes</button>
+        <button class="dock-chip" type="button" data-action="set-dock-filter" data-filter="homepages">Home</button>
+      </div>
+    </div>
+    <div class="dock-section">
+      <div class="dock-section-title">Saved Sidebar</div>
+      <div class="dock-segmented dock-segmented-two">
+        <button class="dock-chip" type="button" data-action="set-sidebar-visibility" data-sidebar="show">Show</button>
+        <button class="dock-chip" type="button" data-action="set-sidebar-visibility" data-sidebar="hide">Hide</button>
+      </div>
+    </div>
+    <div class="dock-hint" id="dockHint">Pick a browser-matching color.</div>
   </div>
 </div>
 

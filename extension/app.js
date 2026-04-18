@@ -16,6 +16,16 @@
 'use strict';
 
 const DEFAULT_THEME_COLOR = '#e3ead7';
+const DEFAULT_DOCK_PREFERENCES = {
+  density: 'cozy',
+  sort: 'smart',
+  filter: 'all',
+  showSidebar: true,
+};
+const DOCK_DENSITY_OPTIONS = new Set(['compact', 'cozy', 'airy']);
+const DOCK_SORT_OPTIONS = new Set(['smart', 'size', 'alpha']);
+const DOCK_FILTER_OPTIONS = new Set(['all', 'duplicates', 'homepages']);
+let dockPreferences = { ...DEFAULT_DOCK_PREFERENCES };
 
 
 /* ----------------------------------------------------------------
@@ -61,6 +71,73 @@ function mixHexColors(base, target, weight = 0.5) {
   });
 }
 
+function normalizeDockPreferences(raw = {}) {
+  const density = DOCK_DENSITY_OPTIONS.has(raw.density) ? raw.density : DEFAULT_DOCK_PREFERENCES.density;
+  const sort = DOCK_SORT_OPTIONS.has(raw.sort) ? raw.sort : DEFAULT_DOCK_PREFERENCES.sort;
+  const filter = DOCK_FILTER_OPTIONS.has(raw.filter) ? raw.filter : DEFAULT_DOCK_PREFERENCES.filter;
+  const showSidebar = typeof raw.showSidebar === 'boolean' ? raw.showSidebar : DEFAULT_DOCK_PREFERENCES.showSidebar;
+  return { density, sort, filter, showSidebar };
+}
+
+async function getAppearanceSettings() {
+  const { appearance = {} } = await chrome.storage.local.get('appearance');
+  return appearance;
+}
+
+async function saveAppearanceSettings(patch) {
+  const appearance = await getAppearanceSettings();
+  const next = { ...appearance, ...patch };
+  await chrome.storage.local.set({ appearance: next });
+  return next;
+}
+
+function updateDockControlUI() {
+  document.body.dataset.density = dockPreferences.density;
+  document.body.classList.toggle('hide-deferred-column', !dockPreferences.showSidebar);
+
+  document.querySelectorAll('[data-action="set-dock-density"]').forEach(el => {
+    el.classList.toggle('is-active', el.dataset.density === dockPreferences.density);
+  });
+  document.querySelectorAll('[data-action="set-dock-sort"]').forEach(el => {
+    el.classList.toggle('is-active', el.dataset.sort === dockPreferences.sort);
+  });
+  document.querySelectorAll('[data-action="set-dock-filter"]').forEach(el => {
+    el.classList.toggle('is-active', el.dataset.filter === dockPreferences.filter);
+  });
+  document.querySelectorAll('[data-action="set-sidebar-visibility"]').forEach(el => {
+    const wantsShow = el.dataset.sidebar === 'show';
+    el.classList.toggle('is-active', wantsShow === dockPreferences.showSidebar);
+  });
+
+  const dockHint = document.getElementById('dockHint');
+  if (dockHint) {
+    const sidebarLabel = dockPreferences.showSidebar ? 'saved sidebar on' : 'saved sidebar hidden';
+    dockHint.textContent = `Density ${dockPreferences.density}. Sorted ${dockPreferences.sort}. Filter ${dockPreferences.filter}. ${sidebarLabel}.`;
+  }
+}
+
+async function loadDockPreferences() {
+  try {
+    const appearance = await getAppearanceSettings();
+    dockPreferences = normalizeDockPreferences(appearance.dock || {});
+  } catch {
+    dockPreferences = { ...DEFAULT_DOCK_PREFERENCES };
+  }
+  updateDockControlUI();
+}
+
+async function saveDockPreferences(patch) {
+  dockPreferences = normalizeDockPreferences({ ...dockPreferences, ...patch });
+  updateDockControlUI();
+  const appearance = await getAppearanceSettings();
+  await chrome.storage.local.set({
+    appearance: {
+      ...appearance,
+      dock: dockPreferences,
+    },
+  });
+}
+
 function applyThemeColor(color) {
   const normalized = normalizeHexColor(color);
   const root = document.documentElement;
@@ -73,7 +150,7 @@ function applyThemeColor(color) {
 
 async function loadThemeColor() {
   try {
-    const { appearance = {} } = await chrome.storage.local.get('appearance');
+    const appearance = await getAppearanceSettings();
     applyThemeColor(appearance.themeColor || DEFAULT_THEME_COLOR);
   } catch {
     applyThemeColor(DEFAULT_THEME_COLOR);
@@ -83,18 +160,12 @@ async function loadThemeColor() {
 async function saveThemeColor(color) {
   const normalized = normalizeHexColor(color);
   applyThemeColor(normalized);
-  const { appearance = {} } = await chrome.storage.local.get('appearance');
-  await chrome.storage.local.set({
-    appearance: {
-      ...appearance,
-      themeColor: normalized,
-    },
-  });
+  await saveAppearanceSettings({ themeColor: normalized });
 }
 
 async function resetThemeColor() {
   applyThemeColor(DEFAULT_THEME_COLOR);
-  const { appearance = {} } = await chrome.storage.local.get('appearance');
+  const appearance = await getAppearanceSettings();
   const next = { ...appearance };
   delete next.themeColor;
   await chrome.storage.local.set({ appearance: next });
@@ -733,6 +804,56 @@ const ICONS = {
    ---------------------------------------------------------------- */
 let domainGroups = [];
 
+function getGroupDuplicateMeta(group) {
+  const tabs = group.tabs || [];
+  const urlCounts = {};
+  for (const tab of tabs) urlCounts[tab.url] = (urlCounts[tab.url] || 0) + 1;
+  const duplicateEntries = Object.entries(urlCounts).filter(([, count]) => count > 1);
+  const duplicateTabs = duplicateEntries.reduce((sum, [, count]) => sum + count - 1, 0);
+  return {
+    urlCounts,
+    duplicateEntries,
+    duplicateTabs,
+    hasDupes: duplicateEntries.length > 0,
+  };
+}
+
+function getDisplayedDomainGroups(groups) {
+  const filtered = groups.filter(group => {
+    if (dockPreferences.filter === 'duplicates') return getGroupDuplicateMeta(group).hasDupes;
+    if (dockPreferences.filter === 'homepages') return group.domain === '__landing-pages__';
+    return true;
+  });
+
+  return filtered.sort((a, b) => {
+    if (dockPreferences.sort === 'alpha') {
+      const aLabel = (a.label || friendlyDomain(a.domain)).toLowerCase();
+      const bLabel = (b.label || friendlyDomain(b.domain)).toLowerCase();
+      return aLabel.localeCompare(bLabel);
+    }
+
+    if (dockPreferences.sort === 'size') {
+      if (b.tabs.length !== a.tabs.length) return b.tabs.length - a.tabs.length;
+      const aLabel = (a.label || friendlyDomain(a.domain)).toLowerCase();
+      const bLabel = (b.label || friendlyDomain(b.domain)).toLowerCase();
+      return aLabel.localeCompare(bLabel);
+    }
+
+    const aIsLanding = a.domain === '__landing-pages__';
+    const bIsLanding = b.domain === '__landing-pages__';
+    if (aIsLanding !== bIsLanding) return aIsLanding ? -1 : 1;
+
+    const aDupes = getGroupDuplicateMeta(a).duplicateTabs;
+    const bDupes = getGroupDuplicateMeta(b).duplicateTabs;
+    if (bDupes !== aDupes) return bDupes - aDupes;
+    if (b.tabs.length !== a.tabs.length) return b.tabs.length - a.tabs.length;
+
+    const aLabel = (a.label || friendlyDomain(a.domain)).toLowerCase();
+    const bLabel = (b.label || friendlyDomain(b.domain)).toLowerCase();
+    return aLabel.localeCompare(bLabel);
+  });
+}
+
 
 /* ----------------------------------------------------------------
    HELPER: filter out browser-internal pages
@@ -832,11 +953,7 @@ function renderDomainCard(group) {
   const stableId  = 'domain-' + group.domain.replace(/[^a-z0-9]/g, '-');
 
   // Count duplicates (exact URL match)
-  const urlCounts = {};
-  for (const tab of tabs) urlCounts[tab.url] = (urlCounts[tab.url] || 0) + 1;
-  const dupeUrls   = Object.entries(urlCounts).filter(([, c]) => c > 1);
-  const hasDupes   = dupeUrls.length > 0;
-  const totalExtras = dupeUrls.reduce((s, [, c]) => s + c - 1, 0);
+  const { urlCounts, duplicateEntries: dupeUrls, hasDupes, duplicateTabs: totalExtras } = getGroupDuplicateMeta(group);
 
   const tabBadge = `<span class="open-tabs-badge">
     ${ICONS.tabs}
@@ -943,6 +1060,10 @@ async function renderDeferredColumn() {
   const archiveList    = document.getElementById('archiveList');
 
   if (!column) return;
+  if (!dockPreferences.showSidebar) {
+    column.style.display = 'none';
+    return;
+  }
 
   try {
     const { active, archived } = await getSavedTabs();
@@ -1172,14 +1293,23 @@ async function renderStaticDashboard() {
   const openTabsMissionsEl   = document.getElementById('openTabsMissions');
   const openTabsSectionCount = document.getElementById('openTabsSectionCount');
   const openTabsSectionTitle = document.getElementById('openTabsSectionTitle');
+  const displayedGroups      = getDisplayedDomainGroups(domainGroups);
+  const sectionTitles = {
+    all: 'Open tabs',
+    duplicates: 'Duplicate cleanup',
+    homepages: 'Homepages',
+  };
 
-  if (domainGroups.length > 0 && openTabsSection) {
-    if (openTabsSectionTitle) openTabsSectionTitle.textContent = 'Open tabs';
-    openTabsSectionCount.innerHTML = `<span class="section-count-text">${domainGroups.length} domain${domainGroups.length !== 1 ? 's' : ''}</span><span class="meta-separator section-separator" aria-hidden="true"></span><button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
-    openTabsMissionsEl.innerHTML = domainGroups.map(g => renderDomainCard(g)).join('');
+  if (displayedGroups.length > 0 && openTabsSection) {
+    if (openTabsSectionTitle) openTabsSectionTitle.textContent = sectionTitles[dockPreferences.filter] || 'Open tabs';
+    openTabsSectionCount.innerHTML = `<span class="section-count-text">${displayedGroups.length} domain${displayedGroups.length !== 1 ? 's' : ''}</span><span class="meta-separator section-separator" aria-hidden="true"></span><button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
+    openTabsMissionsEl.innerHTML = displayedGroups.map(g => renderDomainCard(g)).join('');
     openTabsSection.style.display = 'block';
   } else if (openTabsSection) {
-    openTabsSection.style.display = 'none';
+    openTabsSection.style.display = 'block';
+    if (openTabsSectionTitle) openTabsSectionTitle.textContent = sectionTitles[dockPreferences.filter] || 'Open tabs';
+    openTabsMissionsEl.innerHTML = '<div style="font-size:13px;color:var(--muted);padding:12px 0">Nothing matches this dock filter right now.</div>';
+    openTabsSectionCount.innerHTML = `<span class="section-count-text">0 domains</span><span class="meta-separator section-separator" aria-hidden="true"></span><button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
   }
 
   // --- Footer stats ---
@@ -1225,9 +1355,50 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
+  if (action === 'refresh-dashboard') {
+    await renderDashboard();
+    showToast('Dashboard refreshed');
+    return;
+  }
+
   if (action === 'reset-dock-color') {
     await resetThemeColor();
     showToast('Theme reset');
+    return;
+  }
+
+  if (action === 'set-dock-density') {
+    const density = actionEl.dataset.density;
+    if (!DOCK_DENSITY_OPTIONS.has(density)) return;
+    await saveDockPreferences({ density });
+    await renderDashboard();
+    showToast(`Density set to ${density}`);
+    return;
+  }
+
+  if (action === 'set-dock-sort') {
+    const sort = actionEl.dataset.sort;
+    if (!DOCK_SORT_OPTIONS.has(sort)) return;
+    await saveDockPreferences({ sort });
+    await renderDashboard();
+    showToast(`Sorting by ${sort}`);
+    return;
+  }
+
+  if (action === 'set-dock-filter') {
+    const filter = actionEl.dataset.filter;
+    if (!DOCK_FILTER_OPTIONS.has(filter)) return;
+    await saveDockPreferences({ filter });
+    await renderDashboard();
+    showToast(filter === 'all' ? 'Showing all groups' : `Filter set to ${filter}`);
+    return;
+  }
+
+  if (action === 'set-sidebar-visibility') {
+    const showSidebar = actionEl.dataset.sidebar !== 'hide';
+    await saveDockPreferences({ showSidebar });
+    await renderDashboard();
+    showToast(showSidebar ? 'Saved sidebar shown' : 'Saved sidebar hidden');
     return;
   }
 
@@ -1528,4 +1699,4 @@ document.addEventListener('keydown', (e) => {
    INITIALIZE
    ---------------------------------------------------------------- */
 loadThemeColor();
-renderDashboard();
+loadDockPreferences().then(renderDashboard);
