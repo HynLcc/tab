@@ -20,6 +20,74 @@ If you reuse or redistribute this repo, keep the original copyright and license 
 
 ---
 
+## What Changed From Original Tab Out
+
+This fork keeps the original local-first Chrome extension model, but changes the product and interface direction quite a bit.
+
+- Renamed the extension from `Tab Out` to `Tab`
+- Kept it as a pure Chrome extension with no server, no account, and no external API dependency
+- Reworked the visual system and layout to feel quieter, more editorial, and more browser-native
+- Removed sound from the interaction flow
+- Added manual browser-color matching so the background can be tuned intentionally
+- Expanded the dock from a simple color entry point into a real lightweight control panel
+
+### Product and branding
+
+- Extension name changed to `Tab`
+- Manifest title and browser action title updated to `Tab`
+- README rewritten around the forked product instead of the upstream wording
+
+### UI and layout
+
+- Reworked typography and spacing across the dashboard
+- Moved the open-tab stat into the header instead of keeping it in the footer
+- Removed the footer stat block
+- Tightened and simplified header composition
+- Added a reusable metadata separator dot treatment in the interface
+- Iterated mission/domain card typography and spacing
+- Adjusted responsive behavior for the header and dock
+
+### Tab management behavior
+
+- Kept grouped-by-domain browsing as the main interaction model
+- Kept the dedicated `Homepages` grouping for inbox and home surfaces like Gmail, X, GitHub, YouTube, and LinkedIn
+- Kept duplicate-tab detection and duplicate cleanup actions
+- Kept save-for-later behavior backed by `chrome.storage.local`
+- Kept localhost grouping improvements such as showing port numbers where useful
+
+### Theme and dock
+
+- Added manual theme-color control for browser/background matching
+- Added reset-to-default theme behavior
+- Moved the dock launcher to the top-left corner
+- Changed the dock launcher dot to white so it stays legible against green-toned backgrounds
+- Expanded the dock into a real control surface instead of a placeholder entry point
+
+### Dock features added in this fork
+
+- `Theme`: manually change the page background color
+- `Density`: switch between `compact`, `cozy`, and `airy` tab-density modes
+- `Sort`: reorder groups using `smart`, `size`, or `alpha`
+- `Filter`: focus the dashboard on `everything`, `duplicates`, or `homepages`
+- `Saved Sidebar`: show or hide the right-side saved-for-later column
+- `Refresh`: force a fresh dashboard render from current browser state
+
+All dock preferences are stored locally in `chrome.storage.local`.
+
+### Interaction changes
+
+- Removed sound from close interactions
+- Kept visual feedback centered on motion and confetti rather than audio
+
+### What stayed the same
+
+- It is still a local-first Chrome extension
+- It still works directly with Chrome tabs and local extension storage
+- It still does not send browsing data to any server
+- It still preserves the original project's MIT license and attribution
+
+---
+
 ## Install with a coding agent
 
 Send your coding agent (Claude Code, Codex, etc.) this repo and say **"install this"**:
