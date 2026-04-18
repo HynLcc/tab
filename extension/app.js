@@ -492,7 +492,7 @@ function checkAndShowEmptyState() {
   `;
 
   const countEl = document.getElementById('openTabsSectionCount');
-  if (countEl) countEl.textContent = '0 domains';
+  if (countEl) countEl.innerHTML = '<span class="section-count-text">0 domains</span>';
 }
 
 /**
@@ -1175,7 +1175,7 @@ async function renderStaticDashboard() {
 
   if (domainGroups.length > 0 && openTabsSection) {
     if (openTabsSectionTitle) openTabsSectionTitle.textContent = 'Open tabs';
-    openTabsSectionCount.innerHTML = `${domainGroups.length} domain${domainGroups.length !== 1 ? 's' : ''} &nbsp;&middot;&nbsp; <button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
+    openTabsSectionCount.innerHTML = `<span class="section-count-text">${domainGroups.length} domain${domainGroups.length !== 1 ? 's' : ''}</span> &nbsp;&middot;&nbsp; <button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
     openTabsMissionsEl.innerHTML = domainGroups.map(g => renderDomainCard(g)).join('');
     openTabsSection.style.display = 'block';
   } else if (openTabsSection) {
