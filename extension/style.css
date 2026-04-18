@@ -58,8 +58,9 @@ body::before {
 /* ---- Header ---- */
 header {
   display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
+  justify-content: flex-start;
+  align-items: flex-end;
+  gap: 56px;
   margin-bottom: 16px;
   padding-bottom: 24px;
   border-bottom: 1px solid var(--warm-gray);
@@ -77,12 +78,21 @@ header {
 
 .header-left .date {
   font-family: 'Newsreader', serif;
-  font-size: 18px;
+  font-size: 14px;
   color: var(--muted);
   font-weight: 400;
   font-style: italic;
   letter-spacing: 0.2px;
   text-transform: uppercase;
+}
+
+.header-right {
+  display: flex;
+  align-items: flex-end;
+}
+
+.header-stat {
+  text-align: right;
 }
 
 /* ---- Tab cleanup banner ---- */
@@ -306,13 +316,12 @@ header {
 }
 
 .mission-name {
-  font-family: 'Newsreader', serif;
+  font-family: 'DM Sans', sans-serif;
   font-weight: 500;
-  font-size: 18px;
-  font-style: italic;
+  font-size: 15px;
   line-height: 1.08;
   color: var(--ink);
-  letter-spacing: -0.35px;
+  letter-spacing: -0.2px;
 }
 
 .mission-tag {
@@ -615,12 +624,7 @@ header {
 
 /* ---- Footer ---- */
 footer {
-  margin-top: 48px;
-  padding-top: 20px;
-  border-top: 1px solid var(--warm-gray);
-  display: flex;
-  justify-content: flex-start;
-  align-items: center;
+  display: none;
 }
 
 .dock-control {
@@ -773,6 +777,20 @@ footer {
 }
 
 @media (max-width: 900px) {
+  header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .header-right {
+    align-items: flex-start;
+  }
+
+  .header-stat {
+    text-align: left;
+  }
+
   .dock-control {
     left: 16px;
     bottom: 16px;

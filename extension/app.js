@@ -1183,8 +1183,8 @@ async function renderStaticDashboard() {
   }
 
   // --- Footer stats ---
-  const statTabs = document.getElementById('statTabs');
-  if (statTabs) statTabs.textContent = openTabs.length;
+  const statTabsHeader = document.getElementById('statTabsHeader');
+  if (statTabsHeader) statTabsHeader.textContent = openTabs.length;
 
   // --- Check for duplicate Tab Out tabs ---
   checkTabOutDupes();
@@ -1297,8 +1297,8 @@ document.addEventListener('click', async (e) => {
     }
 
     // Update footer
-    const statTabs = document.getElementById('statTabs');
-    if (statTabs) statTabs.textContent = openTabs.length;
+    const statTabsHeader = document.getElementById('statTabsHeader');
+    if (statTabsHeader) statTabsHeader.textContent = openTabs.length;
 
     showToast('Tab closed');
     return;
@@ -1410,8 +1410,8 @@ document.addEventListener('click', async (e) => {
     const groupLabel = group.domain === '__landing-pages__' ? 'Homepages' : (group.label || friendlyDomain(group.domain));
     showToast(`Closed ${urls.length} tab${urls.length !== 1 ? 's' : ''} from ${groupLabel}`);
 
-    const statTabs = document.getElementById('statTabs');
-    if (statTabs) statTabs.textContent = openTabs.length;
+    const statTabsHeader = document.getElementById('statTabsHeader');
+    if (statTabsHeader) statTabsHeader.textContent = openTabs.length;
     return;
   }
 
