@@ -650,14 +650,15 @@ footer {
 
 .dock-control {
   position: fixed;
-  left: 24px;
-  bottom: 24px;
-  z-index: 20;
+  left: 22px;
+  top: 20px;
+  z-index: 30;
 }
 
 .dock-toggle,
 .dock-reset,
-.dock-more {
+.dock-more,
+.dock-chip {
   font-family: 'DM Sans', sans-serif;
   font-size: 11px;
   font-weight: 600;
@@ -667,15 +668,15 @@ footer {
 
 .dock-toggle {
   position: relative;
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   padding: 0;
   border: none;
   border-radius: 999px;
   background: transparent;
   color: transparent;
   box-shadow: none;
-  opacity: 0.58;
+  opacity: 0.84;
 }
 
 .dock-toggle:hover,
@@ -692,30 +693,30 @@ footer {
 
 .dock-swatch {
   display: block;
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
   border-radius: 999px;
-  background: var(--browser-accent);
-  border: 1px solid rgba(26, 22, 19, 0.14);
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid rgba(26, 22, 19, 0.12);
   box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.42),
-    0 0 0 5px rgba(255, 253, 249, 0.38);
+    inset 0 0 0 1px rgba(255, 255, 255, 0.78),
+    0 10px 28px rgba(26, 22, 19, 0.12);
 }
 
 .dock-panel {
   position: absolute;
   left: 0;
-  bottom: 28px;
-  width: 210px;
-  padding: 12px;
-  border-radius: 14px;
+  top: 30px;
+  width: 286px;
+  padding: 14px;
+  border-radius: 18px;
   border: 1px solid rgba(26, 22, 19, 0.08);
-  background: rgba(255, 253, 249, 0.86);
-  box-shadow: 0 10px 24px rgba(26, 22, 19, 0.1);
+  background: rgba(255, 253, 249, 0.92);
+  box-shadow: 0 18px 40px rgba(26, 22, 19, 0.14);
   backdrop-filter: blur(12px);
   opacity: 0;
-  transform: translateY(10px) scale(0.84);
-  transform-origin: left bottom;
+  transform: translateY(-10px) scale(0.9);
+  transform-origin: left top;
   pointer-events: none;
   transition:
     opacity 0.18s ease,
@@ -734,10 +735,10 @@ footer {
 
 .dock-panel-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 10px;
+  gap: 12px;
+  margin-bottom: 14px;
 }
 
 .dock-label {
@@ -748,13 +749,20 @@ footer {
   color: var(--muted);
 }
 
+.dock-subtitle {
+  margin-top: 4px;
+  max-width: 170px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: rgba(26, 22, 19, 0.56);
+}
+
 .dock-more {
-  padding: 4px 8px;
-  border: 1px solid rgba(26, 22, 19, 0.06);
+  padding: 6px 10px;
+  border: 1px solid rgba(26, 22, 19, 0.08);
   border-radius: 999px;
-  background: rgba(26, 22, 19, 0.02);
-  color: rgba(26, 22, 19, 0.42);
-  cursor: default;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--ink);
 }
 
 .dock-row {
@@ -763,9 +771,58 @@ footer {
   gap: 10px;
 }
 
+.dock-row-theme {
+  justify-content: space-between;
+}
+
+.dock-section {
+  padding-top: 12px;
+  margin-top: 12px;
+  border-top: 1px solid rgba(26, 22, 19, 0.08);
+}
+
+.dock-section:first-of-type {
+  padding-top: 0;
+  margin-top: 0;
+  border-top: none;
+}
+
+.dock-section-title {
+  margin-bottom: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.dock-segmented {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dock-segmented-two .dock-chip {
+  flex: 1;
+}
+
+.dock-chip {
+  padding: 7px 10px;
+  border: 1px solid rgba(26, 22, 19, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.62);
+  color: rgba(26, 22, 19, 0.7);
+}
+
+.dock-chip.is-active {
+  background: rgba(26, 22, 19, 0.88);
+  border-color: rgba(26, 22, 19, 0.88);
+  color: white;
+}
+
 #dockColorInput {
-  width: 44px;
-  height: 32px;
+  width: 52px;
+  height: 34px;
   padding: 0;
   border: none;
   background: transparent;
@@ -784,17 +841,70 @@ footer {
 .dock-reset {
   padding: 6px 10px;
   border: 1px solid rgba(26, 22, 19, 0.08);
-  background: rgba(26, 22, 19, 0.03);
+  background: rgba(255, 255, 255, 0.72);
   color: var(--ink);
   border-radius: 999px;
 }
 
 .dock-hint {
-  margin-top: 8px;
+  margin-top: 12px;
   font-size: 11px;
   line-height: 1.45;
   color: var(--muted);
   opacity: 0.82;
+}
+
+body[data-density='compact'] .missions {
+  columns: 240px;
+  column-gap: 10px;
+}
+
+body[data-density='compact'] .mission-card {
+  padding: 13px 14px;
+  margin-bottom: 10px;
+}
+
+body[data-density='compact'] .page-chip {
+  padding: 6px 2px;
+  font-size: 12px;
+}
+
+body[data-density='compact'] .mission-name {
+  font-size: 14px;
+}
+
+body[data-density='airy'] .missions {
+  columns: 320px;
+  column-gap: 16px;
+}
+
+body[data-density='airy'] .mission-card {
+  padding: 18px 20px;
+  margin-bottom: 16px;
+}
+
+body[data-density='airy'] .page-chip {
+  padding: 10px 4px;
+}
+
+body[data-density='airy'] .mission-name {
+  font-size: 16px;
+}
+
+body.hide-deferred-column .dashboard-columns {
+  display: block;
+}
+
+body.hide-deferred-column .container {
+  max-width: 960px;
+}
+
+body.hide-deferred-column .dashboard-columns .active-section {
+  min-width: 0;
+}
+
+body.hide-deferred-column .deferred-column {
+  display: none !important;
 }
 
 @media (max-width: 900px) {
@@ -818,7 +928,7 @@ footer {
 
   .dock-control {
     left: 16px;
-    bottom: 16px;
+    top: 16px;
   }
 }
 
