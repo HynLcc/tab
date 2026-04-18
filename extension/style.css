@@ -58,8 +58,9 @@ body::before {
 /* ---- Header ---- */
 header {
   display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
+  justify-content: flex-start;
+  align-items: flex-end;
+  gap: 56px;
   margin-bottom: 16px;
   padding-bottom: 24px;
   border-bottom: 1px solid var(--warm-gray);
@@ -69,6 +70,7 @@ header {
   font-family: 'Newsreader', serif;
   font-weight: 300;
   font-size: 28px;
+  font-style: italic;
   letter-spacing: -0.5px;
   color: var(--ink);
   margin-bottom: 4px;
@@ -76,11 +78,21 @@ header {
 
 .header-left .date {
   font-family: 'Newsreader', serif;
-  font-size: 18px;
+  font-size: 14px;
   color: var(--muted);
   font-weight: 400;
+  font-style: italic;
   letter-spacing: 0.2px;
   text-transform: uppercase;
+}
+
+.header-right {
+  display: flex;
+  align-items: flex-end;
+}
+
+.header-stat {
+  text-align: right;
 }
 
 /* ---- Tab cleanup banner ---- */
@@ -218,6 +230,14 @@ header {
   white-space: nowrap;
 }
 
+.section-count-text {
+  font-family: 'Newsreader', serif;
+  font-size: 18px;
+  font-style: italic;
+  font-weight: 400;
+  letter-spacing: -0.2px;
+}
+
 /* ---- Mission Cards ---- */
 .missions {
   columns: 280px;
@@ -296,12 +316,12 @@ header {
 }
 
 .mission-name {
-  font-family: 'Newsreader', serif;
+  font-family: 'DM Sans', sans-serif;
   font-weight: 500;
-  font-size: 18px;
+  font-size: 15px;
   line-height: 1.08;
   color: var(--ink);
-  letter-spacing: -0.35px;
+  letter-spacing: -0.2px;
 }
 
 .mission-tag {
@@ -604,12 +624,7 @@ header {
 
 /* ---- Footer ---- */
 footer {
-  margin-top: 48px;
-  padding-top: 20px;
-  border-top: 1px solid var(--warm-gray);
-  display: flex;
-  justify-content: flex-start;
-  align-items: center;
+  display: none;
 }
 
 .dock-control {
@@ -762,6 +777,20 @@ footer {
 }
 
 @media (max-width: 900px) {
+  header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .header-right {
+    align-items: flex-start;
+  }
+
+  .header-stat {
+    text-align: left;
+  }
+
   .dock-control {
     left: 16px;
     bottom: 16px;
@@ -781,15 +810,18 @@ footer {
   font-family: 'Newsreader', serif;
   font-size: 28px;
   font-weight: 300;
+  font-style: italic;
   color: var(--ink);
   line-height: 1;
   transition: all 0.3s;
 }
 
 .stat-label {
-  font-size: 10px;
+  font-family: 'Newsreader', serif;
+  font-size: 14px;
+  font-style: italic;
   text-transform: uppercase;
-  letter-spacing: 1.5px;
+  letter-spacing: 0.6px;
   color: var(--muted);
   margin-top: 4px;
 }
