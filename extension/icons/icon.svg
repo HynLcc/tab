@@ -1,14 +1,62 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-  <!-- Rounded rectangle background in amber -->
-  <rect x="4" y="4" width="120" height="120" rx="24" ry="24" fill="#c8713a"/>
-  <!-- White "M" letter centered -->
-  <text
-    x="64"
-    y="90"
-    font-family="Georgia, serif"
-    font-size="80"
-    font-weight="bold"
-    fill="white"
-    text-anchor="middle"
-  >M</text>
+  <g transform="translate(64 64) rotate(-8) scale(1.65) translate(-64 -64)">
+    <path
+      d="M36 90 72 54"
+      fill="none"
+      stroke="#111111"
+      stroke-width="10"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <path
+      d="M80 28v-8"
+      fill="none"
+      stroke="#111111"
+      stroke-width="8"
+      stroke-linecap="round"
+    />
+    <path
+      d="M80 66v-8"
+      fill="none"
+      stroke="#111111"
+      stroke-width="8"
+      stroke-linecap="round"
+    />
+    <path
+      d="M54 42h8"
+      fill="none"
+      stroke="#111111"
+      stroke-width="8"
+      stroke-linecap="round"
+    />
+    <path
+      d="M98 42h8"
+      fill="none"
+      stroke="#111111"
+      stroke-width="8"
+      stroke-linecap="round"
+    />
+    <circle cx="80" cy="42" r="4.5" fill="#111111" />
+    <path
+      d="m92 30 6-6"
+      fill="none"
+      stroke="#111111"
+      stroke-width="8"
+      stroke-linecap="round"
+    />
+    <path
+      d="m92 54 6 6"
+      fill="none"
+      stroke="#111111"
+      stroke-width="8"
+      stroke-linecap="round"
+    />
+    <path
+      d="m68 30-6-6"
+      fill="none"
+      stroke="#111111"
+      stroke-width="8"
+      stroke-linecap="round"
+    />
+  </g>
 </svg>
