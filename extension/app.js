@@ -796,6 +796,7 @@ const ICONS = {
   close:   `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>`,
   archive: `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 0 1-2.247 2.118H6.622a2.25 2.25 0 0 1-2.247-2.118L3.75 7.5m6 4.125l2.25 2.25m0 0l2.25 2.25M12 13.875l2.25-2.25M12 13.875l-2.25 2.25M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125Z" /></svg>`,
   focus:   `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m4.5 19.5 15-15m0 0H8.25m11.25 0v11.25" /></svg>`,
+  group:   `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.9" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 6.75h9m-9 5.25h9m-9 5.25h5.25M4.5 5.25A1.5 1.5 0 0 1 6 3.75h12A1.5 1.5 0 0 1 19.5 5.25v13.5A1.5 1.5 0 0 1 18 20.25H6A1.5 1.5 0 0 1 4.5 18.75V5.25Z" /></svg>`,
 };
 
 
@@ -803,6 +804,77 @@ const ICONS = {
    IN-MEMORY STORE FOR OPEN-TAB GROUPS
    ---------------------------------------------------------------- */
 let domainGroups = [];
+const TAB_GROUP_COLORS = ['blue', 'cyan', 'green', 'orange', 'pink', 'purple', 'red', 'yellow'];
+
+function getStableDomainId(domain) {
+  return 'domain-' + domain.replace(/[^a-z0-9]/g, '-');
+}
+
+function getGroupLabel(group) {
+  return group.domain === '__landing-pages__' ? 'Homepages' : (group.label || friendlyDomain(group.domain));
+}
+
+function hashString(value) {
+  let hash = 0;
+  for (const char of value) {
+    hash = ((hash << 5) - hash) + char.charCodeAt(0);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
+function getTabGroupColor(group) {
+  const key = `${group.domain}:${getGroupLabel(group)}`;
+  return TAB_GROUP_COLORS[hashString(key) % TAB_GROUP_COLORS.length];
+}
+
+async function groupTabsIntoChromeGroups(group) {
+  const tabs = (group.tabs || []).filter(tab => Number.isInteger(tab.id));
+  if (tabs.length === 0) {
+    return { groupedTabs: 0, createdGroups: 0, windowsTouched: 0 };
+  }
+
+  const byWindow = new Map();
+  for (const tab of tabs) {
+    if (!byWindow.has(tab.windowId)) byWindow.set(tab.windowId, []);
+    byWindow.get(tab.windowId).push(tab);
+  }
+
+  const title = getGroupLabel(group);
+  const color = getTabGroupColor(group);
+  let groupedTabs = 0;
+  let createdGroups = 0;
+
+  for (const [, windowTabs] of byWindow) {
+    const tabIds = windowTabs.map(tab => tab.id);
+    if (tabIds.length === 0) continue;
+    const groupId = await chrome.tabs.group({ tabIds });
+    await chrome.tabGroups.update(groupId, { title, color, collapsed: false });
+    groupedTabs += tabIds.length;
+    createdGroups += 1;
+  }
+
+  return {
+    groupedTabs,
+    createdGroups,
+    windowsTouched: byWindow.size,
+  };
+}
+
+async function groupMultipleDomainSets(groups) {
+  let groupedTabs = 0;
+  let createdGroups = 0;
+  let windowsTouched = 0;
+
+  for (const group of groups) {
+    const result = await groupTabsIntoChromeGroups(group);
+    groupedTabs += result.groupedTabs;
+    createdGroups += result.createdGroups;
+    windowsTouched += result.windowsTouched;
+  }
+
+  return { groupedTabs, createdGroups, windowsTouched };
+}
 
 function getGroupDuplicateMeta(group) {
   const tabs = group.tabs || [];
@@ -950,7 +1022,7 @@ function renderDomainCard(group) {
   const tabs      = group.tabs || [];
   const tabCount  = tabs.length;
   const isLanding = group.domain === '__landing-pages__';
-  const stableId  = 'domain-' + group.domain.replace(/[^a-z0-9]/g, '-');
+  const stableId  = getStableDomainId(group.domain);
 
   // Count duplicates (exact URL match)
   const { urlCounts, duplicateEntries: dupeUrls, hasDupes, duplicateTabs: totalExtras } = getGroupDuplicateMeta(group);
@@ -1006,6 +1078,10 @@ function renderDomainCard(group) {
   }).join('') + (extraCount > 0 ? buildOverflowChips(uniqueTabs.slice(8), urlCounts) : '');
 
   let actionsHtml = `
+    <button class="action-btn group-tabs" data-action="group-domain-tabs" data-domain-id="${stableId}">
+      ${ICONS.group}
+      Group tabs
+    </button>
     <button class="action-btn close-tabs" data-action="close-domain-tabs" data-domain-id="${stableId}">
       ${ICONS.close}
       Close all ${tabCount} tab${tabCount !== 1 ? 's' : ''}
@@ -1024,7 +1100,7 @@ function renderDomainCard(group) {
       <div class="status-bar"></div>
       <div class="mission-content">
         <div class="mission-top">
-          <span class="mission-name">${isLanding ? 'Homepages' : (group.label || friendlyDomain(group.domain))}</span>
+          <span class="mission-name">${getGroupLabel(group)}</span>
           ${tabBadge}
           ${dupeBadge}
         </div>
@@ -1302,7 +1378,7 @@ async function renderStaticDashboard() {
 
   if (displayedGroups.length > 0 && openTabsSection) {
     if (openTabsSectionTitle) openTabsSectionTitle.textContent = sectionTitles[dockPreferences.filter] || 'Open tabs';
-    openTabsSectionCount.innerHTML = `<span class="section-count-text">${displayedGroups.length} domain${displayedGroups.length !== 1 ? 's' : ''}</span><span class="meta-separator section-separator" aria-hidden="true"></span><button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
+    openTabsSectionCount.innerHTML = `<span class="section-count-text">${displayedGroups.length} domain${displayedGroups.length !== 1 ? 's' : ''}</span><span class="meta-separator section-separator" aria-hidden="true"></span><button class="action-btn group-tabs" data-action="group-all-domain-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.group} Group all ${displayedGroups.length}</button><button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
     openTabsMissionsEl.innerHTML = displayedGroups.map(g => renderDomainCard(g)).join('');
     openTabsSection.style.display = 'block';
   } else if (openTabsSection) {
@@ -1552,10 +1628,52 @@ document.addEventListener('click', async (e) => {
   }
 
   // ---- Close all tabs in a domain group ----
+  if (action === 'group-domain-tabs') {
+    const domainId = actionEl.dataset.domainId;
+    const group = domainGroups.find(g => getStableDomainId(g.domain) === domainId);
+    if (!group) return;
+
+    try {
+      const result = await groupTabsIntoChromeGroups(group);
+      if (result.groupedTabs === 0) {
+        showToast('No tabs available to group');
+        return;
+      }
+      const label = getGroupLabel(group);
+      showToast(`Grouped ${result.groupedTabs} tab${result.groupedTabs !== 1 ? 's' : ''} into ${result.createdGroups} Chrome group${result.createdGroups !== 1 ? 's' : ''} for ${label}`);
+    } catch (err) {
+      console.error('[tab-out] Failed to group domain tabs:', err);
+      showToast('Could not create Chrome tab group');
+    }
+    return;
+  }
+
+  if (action === 'group-all-domain-tabs') {
+    const groups = getDisplayedDomainGroups(domainGroups);
+    if (groups.length === 0) {
+      showToast('Nothing to group right now');
+      return;
+    }
+
+    try {
+      const result = await groupMultipleDomainSets(groups);
+      if (result.groupedTabs === 0) {
+        showToast('No tabs available to group');
+        return;
+      }
+      showToast(`Grouped ${result.groupedTabs} tabs into ${result.createdGroups} Chrome groups`);
+    } catch (err) {
+      console.error('[tab-out] Failed to group all domain tabs:', err);
+      showToast('Could not group tabs');
+    }
+    return;
+  }
+
+  // ---- Close all tabs in a domain group ----
   if (action === 'close-domain-tabs') {
     const domainId = actionEl.dataset.domainId;
     const group    = domainGroups.find(g => {
-      return 'domain-' + g.domain.replace(/[^a-z0-9]/g, '-') === domainId;
+      return getStableDomainId(g.domain) === domainId;
     });
     if (!group) return;
 
@@ -1578,7 +1696,7 @@ document.addEventListener('click', async (e) => {
     const idx = domainGroups.indexOf(group);
     if (idx !== -1) domainGroups.splice(idx, 1);
 
-    const groupLabel = group.domain === '__landing-pages__' ? 'Homepages' : (group.label || friendlyDomain(group.domain));
+    const groupLabel = getGroupLabel(group);
     showToast(`Closed ${urls.length} tab${urls.length !== 1 ? 's' : ''} from ${groupLabel}`);
 
     const statTabsHeader = document.getElementById('statTabsHeader');

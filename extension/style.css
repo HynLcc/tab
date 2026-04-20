@@ -589,6 +589,17 @@ header {
   border-color: var(--accent-amber);
 }
 
+.action-btn.group-tabs {
+  border-color: rgba(90, 107, 122, 0.28);
+  color: var(--accent-slate);
+  background: rgba(90, 107, 122, 0.05);
+}
+
+.action-btn.group-tabs:hover {
+  background: rgba(90, 107, 122, 0.12);
+  border-color: var(--accent-slate);
+}
+
 .action-btn.save-tabs {
   border-color: rgba(90, 122, 98, 0.3);
   color: var(--accent-sage);
