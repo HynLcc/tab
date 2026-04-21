@@ -53,6 +53,8 @@ This fork keeps the original local-first Chrome extension model, but changes the
 - Kept the dedicated `Homepages` grouping for inbox and home surfaces like Gmail, X, GitHub, YouTube, and LinkedIn
 - Kept duplicate-tab detection and duplicate cleanup actions
 - Kept save-for-later behavior backed by `chrome.storage.local`
+- Added a local `Common urls` area for keeping reusable links in the sidebar
+- Added drag-and-drop tab actions so tab rows can be dropped into `Saved for later` or `Common urls`
 - Kept localhost grouping improvements such as showing port numbers where useful
 
 ### Theme and dock
@@ -69,7 +71,7 @@ This fork keeps the original local-first Chrome extension model, but changes the
 - `Density`: switch between `compact`, `cozy`, and `airy` tab-density modes
 - `Sort`: reorder groups using `smart`, `size`, or `alpha`
 - `Filter`: focus the dashboard on `everything`, `duplicates`, or `homepages`
-- `Saved Sidebar`: show or hide the right-side saved-for-later column
+- `Sidebar`: show or hide the entire right-side sidebar
 - `Refresh`: force a fresh dashboard render from current browser state
 
 All dock preferences are stored locally in `chrome.storage.local`.
@@ -78,6 +80,7 @@ All dock preferences are stored locally in `chrome.storage.local`.
 
 - Removed sound from close interactions
 - Kept visual feedback centered on motion and confetti rather than audio
+- Added collapsible sidebar panels so `Common urls` and `Saved for later` can be expanded or tucked away independently
 
 ### What stayed the same
 
@@ -106,6 +109,8 @@ The agent will walk you through it. Takes about 1 minute.
 - **Duplicate detection** flags when you have the same page open twice, with one-click cleanup
 - **Click any tab to jump to it** across windows, no new tab opened
 - **Save for later** bookmark tabs to a checklist before closing them
+- **Drag tabs into the sidebar** to save them for later or pin them into a reusable `Common urls` list
+- **Collapse sidebar sections** when you want a quieter layout without hiding the whole sidebar
 - **Localhost grouping** shows port numbers next to each tab so you can tell your vibe coding projects apart
 - **Expandable groups** show the first 8 tabs with a clickable "+N more"
 - **100% local** your data never leaves your machine
@@ -141,11 +146,12 @@ You open a new tab
   -> Tab shows your open tabs grouped by domain
   -> Homepages (Gmail, X, etc.) get their own group at the top
   -> Click any tab title to jump to it
+  -> Drag tabs into Common urls or Saved for later
   -> Close groups you're done with (confetti)
-  -> Save tabs for later before closing them
+  -> Collapse the sidebar sections you don't need right now
 ```
 
-Everything runs inside the Chrome extension. No external server, no API calls, no data sent anywhere. Saved tabs are stored in `chrome.storage.local`.
+Everything runs inside the Chrome extension. No external server, no API calls, no data sent anywhere. Saved tabs, common urls, and dock/sidebar preferences are stored in `chrome.storage.local`.
 
 ---
 
