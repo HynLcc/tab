@@ -221,7 +221,8 @@ header {
   margin-top: 8px;
 }
 
-.section-header h2 {
+.section-header h2,
+.sidebar-heading {
   font-family: 'Newsreader', serif;
   font-weight: 400;
   font-size: 18px;
@@ -1285,6 +1286,48 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
   transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
 }
 
+.sidebar-toggle {
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar-toggle:focus-visible {
+  outline: none;
+}
+
+.sidebar-toggle:hover .sidebar-heading,
+.sidebar-toggle:focus-visible .sidebar-heading {
+  color: var(--ink);
+}
+
+.sidebar-toggle-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: var(--muted);
+  transition: transform 0.2s ease, color 0.15s ease;
+}
+
+.sidebar-panel-body[hidden] {
+  display: none !important;
+}
+
+.sidebar-panel.is-collapsed {
+  padding-bottom: 2px;
+}
+
+.sidebar-panel.is-collapsed .section-header {
+  margin-bottom: 0;
+}
+
+.sidebar-panel.is-collapsed .sidebar-toggle-icon {
+  transform: rotate(-90deg);
+}
+
 body.is-dragging-tab .sidebar-panel[data-drop-target] {
   background: rgba(255, 253, 249, 0.28);
   border-color: rgba(154, 145, 138, 0.14);
@@ -1302,7 +1345,9 @@ body.is-dragging-tab .sidebar-panel[data-drop-target] {
 }
 
 .sidebar-panel.is-drop-active .section-header h2,
-.sidebar-panel.is-drop-active .sidebar-empty {
+.sidebar-panel.is-drop-active .sidebar-empty,
+.sidebar-panel.is-drop-active .sidebar-heading,
+.sidebar-panel.is-drop-active .sidebar-toggle-icon {
   color: var(--accent-sage);
 }
 

@@ -1180,6 +1180,20 @@ async function renderSidebarColumn() {
     renderFavoriteLinksSection(),
     renderDeferredSection(),
   ]);
+  updateSidebarPanelsUI();
+}
+
+function updateSidebarPanelsUI() {
+  document.querySelectorAll('.sidebar-panel[data-panel]').forEach(panel => {
+    const panelKey = panel.dataset.panel;
+    const isCollapsed = !!sidebarPanelState[panelKey];
+    const body = panel.querySelector('.sidebar-panel-body');
+    const toggle = panel.querySelector('.sidebar-toggle');
+
+    panel.classList.toggle('is-collapsed', isCollapsed);
+    if (body) body.hidden = isCollapsed;
+    if (toggle) toggle.setAttribute('aria-expanded', String(!isCollapsed));
+  });
 }
 
 async function renderFavoriteLinksSection() {
@@ -1696,6 +1710,13 @@ document.addEventListener('click', async (e) => {
     await saveDockPreferences({ showSidebar });
     await renderDashboard();
     showToast(showSidebar ? 'Sidebar shown' : 'Sidebar hidden');
+    return;
+  }
+
+  if (action === 'toggle-sidebar-panel') {
+    const panelKey = actionEl.dataset.panel;
+    if (!panelKey || !(panelKey in sidebarPanelState)) return;
+    await saveSidebarPanelState({ [panelKey]: !sidebarPanelState[panelKey] });
     return;
   }
 
