@@ -505,6 +505,20 @@ header {
   background: rgba(200, 113, 58, 0.04);
 }
 
+.page-chip[draggable='true'] {
+  cursor: grab;
+}
+
+.page-chip[draggable='true']:active,
+.page-chip.is-drag-origin {
+  cursor: grabbing;
+}
+
+.page-chip.is-drag-origin {
+  opacity: 0.42;
+  transform: scale(0.985);
+}
+
 /* "+N more" overflow chip */
 .page-chip-overflow {
   font-size: 12px;
@@ -1014,7 +1028,7 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
 .deferred-list .deferred-item:nth-child(3) { animation-delay: 0.15s; }
 .deferred-list .deferred-item:nth-child(4) { animation-delay: 0.2s; }
 .deferred-list .deferred-item:nth-child(5) { animation-delay: 0.25s; }
-.deferred-column .section-header { animation: fadeUp 0.5s ease 0.1s both; }
+.sidebar-panel .section-header { animation: fadeUp 0.5s ease 0.1s both; }
 
 
 /* ================================================================
@@ -1247,6 +1261,9 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
   top: 32px;
   max-height: calc(100vh - 64px);
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
 }
 
 /* On narrow screens, stack vertically */
@@ -1257,7 +1274,127 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
   .deferred-column {
     width: 100%;
     position: static;
+    max-height: none;
   }
+}
+
+.sidebar-panel {
+  border: 1px solid transparent;
+  border-radius: 12px;
+  padding: 0 10px 12px;
+  transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+body.is-dragging-tab .sidebar-panel[data-drop-target] {
+  background: rgba(255, 253, 249, 0.28);
+  border-color: rgba(154, 145, 138, 0.14);
+}
+
+.sidebar-panel.is-drop-accepting {
+  border-style: dashed;
+}
+
+.sidebar-panel.is-drop-active {
+  background: rgba(90, 122, 98, 0.06);
+  border-color: rgba(90, 122, 98, 0.3);
+  box-shadow: inset 0 0 0 1px rgba(90, 122, 98, 0.08);
+  transform: translateY(-1px);
+}
+
+.sidebar-panel.is-drop-active .section-header h2,
+.sidebar-panel.is-drop-active .sidebar-empty {
+  color: var(--accent-sage);
+}
+
+.sidebar-empty {
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+  padding: 16px 0 6px;
+  line-height: 1.5;
+}
+
+/* ---- Common URLs ---- */
+.favorites-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.favorite-item {
+  position: relative;
+  padding: 10px 26px 10px 0;
+  border-bottom: 1px solid rgba(154, 145, 138, 0.12);
+  animation: fadeUp 0.3s ease both;
+}
+
+.favorite-item:last-child {
+  border-bottom: none;
+}
+
+.favorite-link {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  color: var(--ink);
+}
+
+.favorite-link:hover .favorite-link-text {
+  color: var(--accent-amber);
+}
+
+.favorite-favicon {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.favorite-link-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 0.15s;
+}
+
+.favorite-meta {
+  margin-top: 4px;
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.favorite-dismiss {
+  position: absolute;
+  right: 0;
+  top: 10px;
+  padding: 2px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0.3;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.favorite-dismiss svg {
+  width: 14px;
+  height: 14px;
+}
+
+.favorite-dismiss:hover {
+  opacity: 1;
+  color: var(--status-abandoned);
 }
 
 /* ---- Checklist items ---- */
@@ -1374,7 +1511,8 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
 }
 
 /* Slide-out animation for items being removed */
-.deferred-item.removing {
+.deferred-item.removing,
+.favorite-item.removing {
   opacity: 0;
   transform: translateX(20px);
   transition: opacity 0.3s ease, transform 0.3s ease;
@@ -1382,11 +1520,7 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
 
 /* ---- Empty state ---- */
 .deferred-empty {
-  font-size: 13px;
-  color: var(--muted);
-  font-style: italic;
-  padding: 24px 0;
-  text-align: center;
+  text-align: left;
 }
 
 /* ---- Archive section ---- */

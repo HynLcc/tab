@@ -22,10 +22,36 @@ const DEFAULT_DOCK_PREFERENCES = {
   filter: 'all',
   showSidebar: true,
 };
+const DEFAULT_SIDEBAR_PANEL_STATE = {
+  favorites: false,
+  deferred: false,
+};
 const DOCK_DENSITY_OPTIONS = new Set(['compact', 'cozy', 'airy']);
 const DOCK_SORT_OPTIONS = new Set(['smart', 'size', 'alpha']);
 const DOCK_FILTER_OPTIONS = new Set(['all', 'duplicates', 'homepages']);
+const STORAGE_KEYS = {
+  deferred: 'deferred',
+  favorites: 'favoriteLinks',
+};
+const INTERACTION_KINDS = {
+  tabLink: 'tab-link',
+};
+const INTERACTION_TARGETS = {
+  deferred: {
+    accepts: new Set([INTERACTION_KINDS.tabLink]),
+    actionId: 'save-for-later',
+    dropEffect: 'move',
+  },
+  favorites: {
+    accepts: new Set([INTERACTION_KINDS.tabLink]),
+    actionId: 'save-common-url',
+    dropEffect: 'copy',
+  },
+};
 let dockPreferences = { ...DEFAULT_DOCK_PREFERENCES };
+let sidebarPanelState = { ...DEFAULT_SIDEBAR_PANEL_STATE };
+let activeDragPayload = null;
+let activeDragSource = null;
 
 
 /* ----------------------------------------------------------------
@@ -79,6 +105,13 @@ function normalizeDockPreferences(raw = {}) {
   return { density, sort, filter, showSidebar };
 }
 
+function normalizeSidebarPanelState(raw = {}) {
+  return {
+    favorites: typeof raw.favorites === 'boolean' ? raw.favorites : DEFAULT_SIDEBAR_PANEL_STATE.favorites,
+    deferred: typeof raw.deferred === 'boolean' ? raw.deferred : DEFAULT_SIDEBAR_PANEL_STATE.deferred,
+  };
+}
+
 async function getAppearanceSettings() {
   const { appearance = {} } = await chrome.storage.local.get('appearance');
   return appearance;
@@ -111,7 +144,7 @@ function updateDockControlUI() {
 
   const dockHint = document.getElementById('dockHint');
   if (dockHint) {
-    const sidebarLabel = dockPreferences.showSidebar ? 'saved sidebar on' : 'saved sidebar hidden';
+    const sidebarLabel = dockPreferences.showSidebar ? 'sidebar on' : 'sidebar hidden';
     dockHint.textContent = `Density ${dockPreferences.density}. Sorted ${dockPreferences.sort}. Filter ${dockPreferences.filter}. ${sidebarLabel}.`;
   }
 }
@@ -120,8 +153,10 @@ async function loadDockPreferences() {
   try {
     const appearance = await getAppearanceSettings();
     dockPreferences = normalizeDockPreferences(appearance.dock || {});
+    sidebarPanelState = normalizeSidebarPanelState(appearance.sidebarPanels || {});
   } catch {
     dockPreferences = { ...DEFAULT_DOCK_PREFERENCES };
+    sidebarPanelState = { ...DEFAULT_SIDEBAR_PANEL_STATE };
   }
   updateDockControlUI();
 }
@@ -134,6 +169,18 @@ async function saveDockPreferences(patch) {
     appearance: {
       ...appearance,
       dock: dockPreferences,
+    },
+  });
+}
+
+async function saveSidebarPanelState(patch) {
+  sidebarPanelState = normalizeSidebarPanelState({ ...sidebarPanelState, ...patch });
+  updateSidebarPanelsUI();
+  const appearance = await getAppearanceSettings();
+  await chrome.storage.local.set({
+    appearance: {
+      ...appearance,
+      sidebarPanels: sidebarPanelState,
     },
   });
 }
@@ -261,7 +308,7 @@ async function closeTabsExact(urls) {
  * then hostname fallback). Also brings the window to the front.
  */
 async function focusTab(url) {
-  if (!url) return;
+  if (!url) return false;
   const allTabs = await chrome.tabs.query({});
   const currentWindow = await chrome.windows.getCurrent();
 
@@ -279,12 +326,30 @@ async function focusTab(url) {
     } catch {}
   }
 
-  if (matches.length === 0) return;
+  if (matches.length === 0) return false;
 
   // Prefer a match in a different window so it actually switches windows
   const match = matches.find(t => t.windowId !== currentWindow.id) || matches[0];
   await chrome.tabs.update(match.id, { active: true });
   await chrome.windows.update(match.windowId, { focused: true });
+  return true;
+}
+
+async function openOrFocusTab(url) {
+  if (!url) return;
+  const focused = await focusTab(url);
+  if (!focused) {
+    await chrome.tabs.create({ url });
+  }
+}
+
+async function closeSingleTabByUrl(url) {
+  if (!url) return false;
+  const allTabs = await chrome.tabs.query({});
+  const match = allTabs.find(t => t.url === url);
+  if (!match) return false;
+  await chrome.tabs.remove(match.id);
+  return true;
 }
 
 /**
@@ -371,7 +436,7 @@ async function closeTabOutDupes() {
  * @param {{ url: string, title: string }} tab
  */
 async function saveTabForLater(tab) {
-  const { deferred = [] } = await chrome.storage.local.get('deferred');
+  const { [STORAGE_KEYS.deferred]: deferred = [] } = await chrome.storage.local.get(STORAGE_KEYS.deferred);
   deferred.push({
     id:        Date.now().toString(),
     url:       tab.url,
@@ -380,7 +445,7 @@ async function saveTabForLater(tab) {
     completed: false,
     dismissed: false,
   });
-  await chrome.storage.local.set({ deferred });
+  await chrome.storage.local.set({ [STORAGE_KEYS.deferred]: deferred });
 }
 
 /**
@@ -391,7 +456,7 @@ async function saveTabForLater(tab) {
  * Splits into active (not completed) and archived (completed).
  */
 async function getSavedTabs() {
-  const { deferred = [] } = await chrome.storage.local.get('deferred');
+  const { [STORAGE_KEYS.deferred]: deferred = [] } = await chrome.storage.local.get(STORAGE_KEYS.deferred);
   const visible = deferred.filter(t => !t.dismissed);
   return {
     active:   visible.filter(t => !t.completed),
@@ -405,12 +470,12 @@ async function getSavedTabs() {
  * Marks a saved tab as completed (checked off). It moves to the archive.
  */
 async function checkOffSavedTab(id) {
-  const { deferred = [] } = await chrome.storage.local.get('deferred');
+  const { [STORAGE_KEYS.deferred]: deferred = [] } = await chrome.storage.local.get(STORAGE_KEYS.deferred);
   const tab = deferred.find(t => t.id === id);
   if (tab) {
     tab.completed = true;
     tab.completedAt = new Date().toISOString();
-    await chrome.storage.local.set({ deferred });
+    await chrome.storage.local.set({ [STORAGE_KEYS.deferred]: deferred });
   }
 }
 
@@ -420,12 +485,54 @@ async function checkOffSavedTab(id) {
  * Marks a saved tab as dismissed (removed from all lists).
  */
 async function dismissSavedTab(id) {
-  const { deferred = [] } = await chrome.storage.local.get('deferred');
+  const { [STORAGE_KEYS.deferred]: deferred = [] } = await chrome.storage.local.get(STORAGE_KEYS.deferred);
   const tab = deferred.find(t => t.id === id);
   if (tab) {
     tab.dismissed = true;
-    await chrome.storage.local.set({ deferred });
+    await chrome.storage.local.set({ [STORAGE_KEYS.deferred]: deferred });
   }
+}
+
+async function saveFavoriteLink(link) {
+  const { [STORAGE_KEYS.favorites]: favorites = [] } = await chrome.storage.local.get(STORAGE_KEYS.favorites);
+  const now = new Date().toISOString();
+  const existing = favorites.find(item => !item.dismissed && item.url === link.url);
+
+  if (existing) {
+    existing.title = link.title || existing.title;
+    existing.updatedAt = now;
+    await chrome.storage.local.set({ [STORAGE_KEYS.favorites]: favorites });
+    return { status: 'existing', item: existing };
+  }
+
+  const item = {
+    id: Date.now().toString(),
+    url: link.url,
+    title: link.title,
+    createdAt: now,
+    updatedAt: now,
+    dismissed: false,
+  };
+
+  favorites.unshift(item);
+  await chrome.storage.local.set({ [STORAGE_KEYS.favorites]: favorites });
+  return { status: 'created', item };
+}
+
+async function getFavoriteLinks() {
+  const { [STORAGE_KEYS.favorites]: favorites = [] } = await chrome.storage.local.get(STORAGE_KEYS.favorites);
+  return favorites
+    .filter(item => !item.dismissed)
+    .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0));
+}
+
+async function dismissFavoriteLink(id) {
+  const { [STORAGE_KEYS.favorites]: favorites = [] } = await chrome.storage.local.get(STORAGE_KEYS.favorites);
+  const item = favorites.find(entry => entry.id === id);
+  if (!item) return false;
+  item.dismissed = true;
+  await chrome.storage.local.set({ [STORAGE_KEYS.favorites]: favorites });
+  return true;
 }
 
 
@@ -529,6 +636,32 @@ function getDateDisplay() {
     year:    'numeric',
     month:   'long',
     day:     'numeric',
+  });
+}
+
+function escapeHtml(value = '') {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function createTabInteractionPayload(tab) {
+  if (!tab || !tab.url) return null;
+  return {
+    kind: INTERACTION_KINDS.tabLink,
+    url: tab.url,
+    title: tab.title || tab.url,
+  };
+}
+
+function getTabPayloadFromElement(element) {
+  if (!element) return null;
+  return createTabInteractionPayload({
+    url: element.dataset.tabUrl,
+    title: element.dataset.tabTitle || element.getAttribute('title') || element.dataset.tabUrl,
   });
 }
 
@@ -898,30 +1031,41 @@ function checkTabOutDupes() {
    OVERFLOW CHIPS ("+N more" expand button in domain cards)
    ---------------------------------------------------------------- */
 
-function buildOverflowChips(hiddenTabs, urlCounts = {}) {
-  const hiddenChips = hiddenTabs.map(tab => {
-    const label    = cleanTitle(smartTitle(stripTitleNoise(tab.title || ''), tab.url), '');
-    const count    = urlCounts[tab.url] || 1;
-    const dupeTag  = count > 1 ? ` <span class="chip-dupe-badge">(${count}x)</span>` : '';
-    const chipClass = count > 1 ? ' chip-has-dupes' : '';
-    const safeUrl   = (tab.url || '').replace(/"/g, '&quot;');
-    const safeTitle = label.replace(/"/g, '&quot;');
-    let domain = '';
-    try { domain = new URL(tab.url).hostname; } catch {}
-    const faviconUrl = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=16` : '';
-    return `<div class="page-chip clickable${chipClass}" data-action="focus-tab" data-tab-url="${safeUrl}" title="${safeTitle}">
-      ${faviconUrl ? `<img class="chip-favicon" src="${faviconUrl}" alt="" onerror="this.style.display='none'">` : ''}
-      <span class="chip-text">${label}</span>${dupeTag}
-      <div class="chip-actions">
-        <button class="chip-action chip-save" data-action="defer-single-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" title="Save for later">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0Z" /></svg>
-        </button>
-        <button class="chip-action chip-close" data-action="close-single-tab" data-tab-url="${safeUrl}" title="Close this tab">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
-        </button>
-      </div>
-    </div>`;
-  }).join('');
+function renderTabChip(tab, urlCounts = {}, groupDomain = '') {
+  let label = cleanTitle(smartTitle(stripTitleNoise(tab.title || ''), tab.url), groupDomain);
+
+  try {
+    const parsed = new URL(tab.url);
+    if (parsed.hostname === 'localhost' && parsed.port) {
+      label = `${parsed.port} ${label}`;
+    }
+  } catch {}
+
+  const count = urlCounts[tab.url] || 1;
+  const dupeTag = count > 1 ? ` <span class="chip-dupe-badge">(${count}x)</span>` : '';
+  const chipClass = count > 1 ? ' chip-has-dupes' : '';
+  const safeUrl = escapeHtml(tab.url || '');
+  const safeTitle = escapeHtml(label);
+  let domain = '';
+  try { domain = new URL(tab.url).hostname; } catch {}
+  const faviconUrl = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=16` : '';
+
+  return `<div class="page-chip clickable${chipClass}" draggable="true" data-transfer-kind="${INTERACTION_KINDS.tabLink}" data-action="focus-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" title="${safeTitle}">
+    ${faviconUrl ? `<img class="chip-favicon" src="${faviconUrl}" alt="" onerror="this.style.display='none'">` : ''}
+    <span class="chip-text">${safeTitle}</span>${dupeTag}
+    <div class="chip-actions">
+      <button class="chip-action chip-save" data-action="defer-single-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" title="Save for later">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0Z" /></svg>
+      </button>
+      <button class="chip-action chip-close" data-action="close-single-tab" data-tab-url="${safeUrl}" title="Close this tab">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
+      </button>
+    </div>
+  </div>`;
+}
+
+function buildOverflowChips(hiddenTabs, urlCounts = {}, groupDomain = '') {
+  const hiddenChips = hiddenTabs.map(tab => renderTabChip(tab, urlCounts, groupDomain)).join('');
 
   return `
     <div class="page-chips-overflow" style="display:none">${hiddenChips}</div>
@@ -971,34 +1115,8 @@ function renderDomainCard(group) {
   const visibleTabs = uniqueTabs.slice(0, 8);
   const extraCount  = uniqueTabs.length - visibleTabs.length;
 
-  const pageChips = visibleTabs.map(tab => {
-    let label = cleanTitle(smartTitle(stripTitleNoise(tab.title || ''), tab.url), group.domain);
-    // For localhost tabs, prepend port number so you can tell projects apart
-    try {
-      const parsed = new URL(tab.url);
-      if (parsed.hostname === 'localhost' && parsed.port) label = `${parsed.port} ${label}`;
-    } catch {}
-    const count    = urlCounts[tab.url];
-    const dupeTag  = count > 1 ? ` <span class="chip-dupe-badge">(${count}x)</span>` : '';
-    const chipClass = count > 1 ? ' chip-has-dupes' : '';
-    const safeUrl   = (tab.url || '').replace(/"/g, '&quot;');
-    const safeTitle = label.replace(/"/g, '&quot;');
-    let domain = '';
-    try { domain = new URL(tab.url).hostname; } catch {}
-    const faviconUrl = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=16` : '';
-    return `<div class="page-chip clickable${chipClass}" data-action="focus-tab" data-tab-url="${safeUrl}" title="${safeTitle}">
-      ${faviconUrl ? `<img class="chip-favicon" src="${faviconUrl}" alt="" onerror="this.style.display='none'">` : ''}
-      <span class="chip-text">${label}</span>${dupeTag}
-      <div class="chip-actions">
-        <button class="chip-action chip-save" data-action="defer-single-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" title="Save for later">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0Z" /></svg>
-        </button>
-        <button class="chip-action chip-close" data-action="close-single-tab" data-tab-url="${safeUrl}" title="Close this tab">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
-        </button>
-      </div>
-    </div>`;
-  }).join('') + (extraCount > 0 ? buildOverflowChips(uniqueTabs.slice(8), urlCounts) : '');
+  const pageChips = visibleTabs.map(tab => renderTabChip(tab, urlCounts, group.domain)).join('')
+    + (extraCount > 0 ? buildOverflowChips(uniqueTabs.slice(8), urlCounts, group.domain) : '');
 
   let actionsHtml = `
     <button class="action-btn group-tabs" data-action="group-domain-tabs" data-domain-id="${stableId}">
@@ -1039,43 +1157,74 @@ function renderDomainCard(group) {
 
 
 /* ----------------------------------------------------------------
-   SAVED FOR LATER — Render Checklist Column
+   SIDEBAR — Common URLs + Saved for Later
    ---------------------------------------------------------------- */
 
 /**
- * renderDeferredColumn()
+ * renderSidebarColumn()
  *
- * Reads saved tabs from chrome.storage.local and renders the right-side
- * "Saved for Later" checklist column. Shows active items as a checklist
- * and completed items in a collapsible archive.
+ * Renders the right-side sidebar. It always stays available as a drop zone
+ * when the user wants the sidebar shown, even if its sections are empty.
  */
-async function renderDeferredColumn() {
-  const column         = document.getElementById('deferredColumn');
-  const list           = document.getElementById('deferredList');
-  const empty          = document.getElementById('deferredEmpty');
-  const countEl        = document.getElementById('deferredCount');
-  const archiveEl      = document.getElementById('deferredArchive');
-  const archiveCountEl = document.getElementById('archiveCount');
-  const archiveList    = document.getElementById('archiveList');
-
+async function renderSidebarColumn() {
+  const column = document.getElementById('deferredColumn');
   if (!column) return;
+
   if (!dockPreferences.showSidebar) {
     column.style.display = 'none';
     return;
   }
 
+  column.style.display = 'block';
+  await Promise.all([
+    renderFavoriteLinksSection(),
+    renderDeferredSection(),
+  ]);
+}
+
+async function renderFavoriteLinksSection() {
+  const list = document.getElementById('favoritesList');
+  const empty = document.getElementById('favoritesEmpty');
+  const countEl = document.getElementById('favoritesCount');
+
+  if (!list || !empty || !countEl) return;
+
+  try {
+    const favorites = await getFavoriteLinks();
+
+    if (favorites.length > 0) {
+      countEl.textContent = `${favorites.length} item${favorites.length !== 1 ? 's' : ''}`;
+      list.innerHTML = favorites.map(item => renderFavoriteItem(item)).join('');
+      list.style.display = 'block';
+      empty.style.display = 'none';
+    } else {
+      countEl.textContent = '';
+      list.innerHTML = '';
+      list.style.display = 'none';
+      empty.style.display = 'block';
+    }
+  } catch (err) {
+    console.warn('[tab-out] Could not load favorite links:', err);
+    countEl.textContent = '';
+    list.innerHTML = '';
+    list.style.display = 'none';
+    empty.style.display = 'block';
+  }
+}
+
+async function renderDeferredSection() {
+  const list = document.getElementById('deferredList');
+  const empty = document.getElementById('deferredEmpty');
+  const countEl = document.getElementById('deferredCount');
+  const archiveEl      = document.getElementById('deferredArchive');
+  const archiveCountEl = document.getElementById('archiveCount');
+  const archiveList    = document.getElementById('archiveList');
+
+  if (!list || !empty || !countEl || !archiveEl || !archiveCountEl || !archiveList) return;
+
   try {
     const { active, archived } = await getSavedTabs();
 
-    // Hide the entire column if there's nothing to show
-    if (active.length === 0 && archived.length === 0) {
-      column.style.display = 'none';
-      return;
-    }
-
-    column.style.display = 'block';
-
-    // Render active checklist items
     if (active.length > 0) {
       countEl.textContent = `${active.length} item${active.length !== 1 ? 's' : ''}`;
       list.innerHTML = active.map(item => renderDeferredItem(item)).join('');
@@ -1098,8 +1247,36 @@ async function renderDeferredColumn() {
 
   } catch (err) {
     console.warn('[tab-out] Could not load saved tabs:', err);
-    column.style.display = 'none';
+    list.innerHTML = '';
+    list.style.display = 'none';
+    empty.style.display = 'block';
+    countEl.textContent = '';
+    archiveEl.style.display = 'none';
   }
+}
+
+function renderFavoriteItem(item) {
+  let domain = '';
+  try { domain = new URL(item.url).hostname.replace(/^www\./, ''); } catch {}
+  const faviconUrl = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=16` : '';
+  const title = escapeHtml(item.title || item.url);
+  const safeUrl = escapeHtml(item.url || '');
+  const ago = timeAgo(item.updatedAt || item.createdAt);
+
+  return `
+    <div class="favorite-item" data-favorite-id="${item.id}">
+      <button class="favorite-link" type="button" data-action="open-favorite-link" data-favorite-url="${safeUrl}" title="${title}">
+        ${faviconUrl ? `<img src="${faviconUrl}" alt="" class="favorite-favicon" onerror="this.style.display='none'">` : ''}
+        <span class="favorite-link-text">${title}</span>
+      </button>
+      <div class="favorite-meta">
+        <span>${escapeHtml(domain)}</span>
+        <span>${escapeHtml(ago)}</span>
+      </div>
+      <button class="favorite-dismiss" type="button" data-action="dismiss-favorite-link" data-favorite-id="${item.id}" title="Remove from common urls">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
+      </button>
+    </div>`;
 }
 
 /**
@@ -1111,19 +1288,21 @@ async function renderDeferredColumn() {
 function renderDeferredItem(item) {
   let domain = '';
   try { domain = new URL(item.url).hostname.replace(/^www\./, ''); } catch {}
-  const faviconUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=16`;
+  const faviconUrl = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=16` : '';
   const ago = timeAgo(item.savedAt);
+  const title = escapeHtml(item.title || item.url);
+  const safeUrl = escapeHtml(item.url || '');
 
   return `
     <div class="deferred-item" data-deferred-id="${item.id}">
       <input type="checkbox" class="deferred-checkbox" data-action="check-deferred" data-deferred-id="${item.id}">
       <div class="deferred-info">
-        <a href="${item.url}" target="_blank" rel="noopener" class="deferred-title" title="${(item.title || '').replace(/"/g, '&quot;')}">
-          <img src="${faviconUrl}" alt="" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px" onerror="this.style.display='none'">${item.title || item.url}
+        <a href="${safeUrl}" target="_blank" rel="noopener" class="deferred-title" title="${title}">
+          ${faviconUrl ? `<img src="${faviconUrl}" alt="" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px" onerror="this.style.display='none'">` : ''}${title}
         </a>
         <div class="deferred-meta">
-          <span>${domain}</span>
-          <span>${ago}</span>
+          <span>${escapeHtml(domain)}</span>
+          <span>${escapeHtml(ago)}</span>
         </div>
       </div>
       <button class="deferred-dismiss" data-action="dismiss-deferred" data-deferred-id="${item.id}" title="Dismiss">
@@ -1139,12 +1318,14 @@ function renderDeferredItem(item) {
  */
 function renderArchiveItem(item) {
   const ago = item.completedAt ? timeAgo(item.completedAt) : timeAgo(item.savedAt);
+  const title = escapeHtml(item.title || item.url);
+  const safeUrl = escapeHtml(item.url || '');
   return `
     <div class="archive-item">
-      <a href="${item.url}" target="_blank" rel="noopener" class="archive-item-title" title="${(item.title || '').replace(/"/g, '&quot;')}">
-        ${item.title || item.url}
+      <a href="${safeUrl}" target="_blank" rel="noopener" class="archive-item-title" title="${title}">
+        ${title}
       </a>
-      <span class="archive-item-date">${ago}</span>
+      <span class="archive-item-date">${escapeHtml(ago)}</span>
     </div>`;
 }
 
@@ -1318,12 +1499,68 @@ async function renderStaticDashboard() {
   // --- Check for duplicate Tab Out tabs ---
   checkTabOutDupes();
 
-  // --- Render "Saved for Later" column ---
-  await renderDeferredColumn();
+  // --- Render sidebar targets ("Common urls" + "Saved for later") ---
+  await renderSidebarColumn();
 }
 
 async function renderDashboard() {
   await renderStaticDashboard();
+}
+
+function canTargetAcceptPayload(targetId, payload) {
+  if (!targetId || !payload) return false;
+  const target = INTERACTION_TARGETS[targetId];
+  return !!target && target.accepts.has(payload.kind);
+}
+
+function updateDropTargetUI(payload, activeTargetId = null) {
+  const targetEls = document.querySelectorAll('[data-drop-target]');
+  document.body.classList.toggle('is-dragging-tab', !!payload);
+
+  targetEls.forEach(el => {
+    const targetId = el.dataset.dropTarget;
+    const accepts = canTargetAcceptPayload(targetId, payload);
+    el.classList.toggle('is-drop-accepting', accepts);
+    el.classList.toggle('is-drop-active', accepts && activeTargetId === targetId);
+  });
+
+  if (activeDragSource) {
+    activeDragSource.classList.toggle('is-drag-origin', !!payload);
+  }
+}
+
+function clearDragState() {
+  activeDragPayload = null;
+  if (activeDragSource) {
+    activeDragSource.classList.remove('is-drag-origin');
+  }
+  activeDragSource = null;
+  updateDropTargetUI(null, null);
+}
+
+const INTERACTION_ACTIONS = {
+  'save-for-later': async (payload) => {
+    await saveTabForLater({ url: payload.url, title: payload.title });
+    await closeSingleTabByUrl(payload.url);
+    await fetchOpenTabs();
+    showToast('Saved for later');
+    await renderDashboard();
+    return true;
+  },
+  'save-common-url': async (payload) => {
+    const result = await saveFavoriteLink({ url: payload.url, title: payload.title });
+    showToast(result.status === 'existing' ? 'Already in common urls' : 'Added to common urls');
+    await renderSidebarColumn();
+    return true;
+  },
+};
+
+async function runInteractionTarget(targetId, payload) {
+  const target = INTERACTION_TARGETS[targetId];
+  if (!target || !canTargetAcceptPayload(targetId, payload)) return false;
+  const handler = INTERACTION_ACTIONS[target.actionId];
+  if (!handler) return false;
+  return handler(payload, target);
 }
 
 
@@ -1334,6 +1571,67 @@ async function renderDashboard() {
    Think of it as one security guard watching the whole building
    instead of one per door.
    ---------------------------------------------------------------- */
+
+document.addEventListener('dragstart', (e) => {
+  const sourceEl = e.target.closest('[data-transfer-kind]');
+  if (!sourceEl) return;
+
+  const payload = getTabPayloadFromElement(sourceEl);
+  if (!payload) return;
+
+  activeDragPayload = payload;
+  activeDragSource = sourceEl;
+  updateDropTargetUI(payload, null);
+
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'copyMove';
+    e.dataTransfer.setData('application/x-tab-out-item', JSON.stringify(payload));
+    e.dataTransfer.setData('text/plain', payload.url);
+  }
+});
+
+document.addEventListener('dragover', (e) => {
+  if (!activeDragPayload) return;
+
+  const targetEl = e.target.closest('[data-drop-target]');
+  const targetId = targetEl?.dataset.dropTarget;
+  if (!canTargetAcceptPayload(targetId, activeDragPayload)) {
+    updateDropTargetUI(activeDragPayload, null);
+    return;
+  }
+
+  e.preventDefault();
+  if (e.dataTransfer) {
+    e.dataTransfer.dropEffect = INTERACTION_TARGETS[targetId].dropEffect;
+  }
+  updateDropTargetUI(activeDragPayload, targetId);
+});
+
+document.addEventListener('drop', async (e) => {
+  if (!activeDragPayload) return;
+
+  const targetEl = e.target.closest('[data-drop-target]');
+  const targetId = targetEl?.dataset.dropTarget;
+  if (!canTargetAcceptPayload(targetId, activeDragPayload)) {
+    clearDragState();
+    return;
+  }
+
+  e.preventDefault();
+
+  try {
+    await runInteractionTarget(targetId, activeDragPayload);
+  } catch (err) {
+    console.error('[tab-out] Drag action failed:', err);
+    showToast('Could not complete drag action');
+  } finally {
+    clearDragState();
+  }
+});
+
+document.addEventListener('dragend', () => {
+  clearDragState();
+});
 
 document.addEventListener('click', async (e) => {
   // Walk up the DOM to find the nearest element with data-action
@@ -1397,7 +1695,7 @@ document.addEventListener('click', async (e) => {
     const showSidebar = actionEl.dataset.sidebar !== 'hide';
     await saveDockPreferences({ showSidebar });
     await renderDashboard();
-    showToast(showSidebar ? 'Saved sidebar shown' : 'Saved sidebar hidden');
+    showToast(showSidebar ? 'Sidebar shown' : 'Sidebar hidden');
     return;
   }
 
@@ -1426,6 +1724,33 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
+  if (action === 'open-favorite-link') {
+    e.preventDefault();
+    const url = actionEl.dataset.favoriteUrl;
+    if (!url) return;
+    await openOrFocusTab(url);
+    return;
+  }
+
+  if (action === 'dismiss-favorite-link') {
+    const id = actionEl.dataset.favoriteId;
+    if (!id) return;
+
+    await dismissFavoriteLink(id);
+    const item = actionEl.closest('.favorite-item');
+    if (item) {
+      item.classList.add('removing');
+      setTimeout(() => {
+        item.remove();
+        renderSidebarColumn();
+      }, 300);
+    } else {
+      await renderSidebarColumn();
+    }
+    showToast('Removed from common urls');
+    return;
+  }
+
   // ---- Focus a specific tab ----
   if (action === 'focus-tab') {
     const tabUrl = actionEl.dataset.tabUrl;
@@ -1440,9 +1765,7 @@ document.addEventListener('click', async (e) => {
     if (!tabUrl) return;
 
     // Close the tab in Chrome directly
-    const allTabs = await chrome.tabs.query({});
-    const match   = allTabs.find(t => t.url === tabUrl);
-    if (match) await chrome.tabs.remove(match.id);
+    await closeSingleTabByUrl(tabUrl);
     await fetchOpenTabs();
 
     // Animate the chip row out
@@ -1475,36 +1798,15 @@ document.addEventListener('click', async (e) => {
   // ---- Save a single tab for later (then close it) ----
   if (action === 'defer-single-tab') {
     e.stopPropagation();
-    const tabUrl   = actionEl.dataset.tabUrl;
-    const tabTitle = actionEl.dataset.tabTitle || tabUrl;
-    if (!tabUrl) return;
+    const payload = getTabPayloadFromElement(actionEl);
+    if (!payload) return;
 
-    // Save to chrome.storage.local
     try {
-      await saveTabForLater({ url: tabUrl, title: tabTitle });
+      await runInteractionTarget('deferred', payload);
     } catch (err) {
       console.error('[tab-out] Failed to save tab:', err);
       showToast('Failed to save tab');
-      return;
     }
-
-    // Close the tab in Chrome
-    const allTabs = await chrome.tabs.query({});
-    const match   = allTabs.find(t => t.url === tabUrl);
-    if (match) await chrome.tabs.remove(match.id);
-    await fetchOpenTabs();
-
-    // Animate chip out
-    const chip = actionEl.closest('.page-chip');
-    if (chip) {
-      chip.style.transition = 'opacity 0.2s, transform 0.2s';
-      chip.style.opacity    = '0';
-      chip.style.transform  = 'scale(0.8)';
-      setTimeout(() => chip.remove(), 200);
-    }
-
-    showToast('Saved for later');
-    await renderDeferredColumn();
     return;
   }
 
@@ -1523,7 +1825,7 @@ document.addEventListener('click', async (e) => {
         item.classList.add('removing');
         setTimeout(() => {
           item.remove();
-          renderDeferredColumn(); // refresh counts and archive
+          renderSidebarColumn(); // refresh counts and archive
         }, 300);
       }, 800);
     }
@@ -1542,7 +1844,7 @@ document.addEventListener('click', async (e) => {
       item.classList.add('removing');
       setTimeout(() => {
         item.remove();
-        renderDeferredColumn();
+        renderSidebarColumn();
       }, 300);
     }
     return;
