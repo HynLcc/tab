@@ -55,6 +55,8 @@ This fork keeps the original local-first Chrome extension model, but changes the
 - Kept save-for-later behavior backed by `chrome.storage.local`
 - Added a local `Common urls` area for keeping reusable links in the sidebar
 - Added drag-and-drop tab actions so tab rows can be dropped into `Saved for later` or `Common urls`
+- Added Chrome tab group management so native browser groups render as first-class cards
+- Added drag-and-drop movement from the dashboard into existing Chrome tab groups
 - Kept localhost grouping improvements such as showing port numbers where useful
 
 ### Theme and dock
@@ -110,6 +112,8 @@ The agent will walk you through it. Takes about 1 minute.
 - **Click any tab to jump to it** across windows, no new tab opened
 - **Save for later** bookmark tabs to a checklist before closing them
 - **Drag tabs into the sidebar** to save them for later or pin them into a reusable `Common urls` list
+- **Manage Chrome tab groups** from the dashboard, with native group colors shown on each group card
+- **Drag tabs into Chrome groups** without using Chrome's narrow tab-strip drag target
 - **Collapse sidebar sections** when you want a quieter layout without hiding the whole sidebar
 - **Localhost grouping** shows port numbers next to each tab so you can tell your vibe coding projects apart
 - **Expandable groups** show the first 8 tabs with a clickable "+N more"
@@ -146,6 +150,8 @@ You open a new tab
   -> Tab shows your open tabs grouped by domain
   -> Homepages (Gmail, X, etc.) get their own group at the top
   -> Click any tab title to jump to it
+  -> Native Chrome tab groups appear as their own colored cards
+  -> Drag a tab into a Chrome group card to move it there
   -> Drag tabs into Common urls or Saved for later
   -> Close groups you're done with (confetti)
   -> Collapse the sidebar sections you don't need right now

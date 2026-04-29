@@ -297,10 +297,31 @@ header {
 .mission-card.has-active-bar::before { background: var(--status-active); }
 .mission-card.has-amber-bar::before { background: var(--accent-amber); }
 .mission-card.has-neutral-bar::before { background: var(--warm-gray); }
+.mission-card.chrome-group-card::before { background: var(--group-accent, var(--accent-slate)); }
 
 .mission-card:hover {
   box-shadow: 0 4px 20px var(--shadow);
   transform: translateY(-1px);
+}
+
+body.is-dragging-tab .mission-card.chrome-group-card[data-drop-target] {
+  border-style: dashed;
+  border-color: rgba(var(--group-accent-rgb, 90, 107, 122), 0.26);
+}
+
+.mission-card.chrome-group-card.is-drop-accepting {
+  box-shadow: inset 0 0 0 1px rgba(var(--group-accent-rgb, 90, 107, 122), 0.08);
+}
+
+.mission-card.chrome-group-card.is-drop-active {
+  background:
+    linear-gradient(180deg, rgba(var(--group-accent-rgb, 90, 107, 122), 0.08), rgba(var(--group-accent-rgb, 90, 107, 122), 0.02)),
+    var(--card-bg);
+  border-color: rgba(var(--group-accent-rgb, 90, 107, 122), 0.4);
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--group-accent-rgb, 90, 107, 122), 0.16),
+    0 10px 28px rgba(26, 22, 19, 0.08);
+  transform: translateY(-2px);
 }
 
 /* Closing animation — card scales down and fades out */
@@ -368,6 +389,22 @@ header {
 .mission-tag.abandoned {
   color: var(--status-abandoned);
   background: rgba(179, 90, 90, 0.08);
+}
+
+.chrome-group-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--group-accent, var(--accent-slate));
+  box-shadow:
+    0 0 0 4px rgba(var(--group-accent-rgb, 90, 107, 122), 0.08),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.62);
+  flex: 0 0 auto;
+}
+
+.chrome-group-state {
+  color: var(--group-accent, var(--accent-slate));
+  background: rgba(var(--group-accent-rgb, 90, 107, 122), 0.08);
 }
 
 /* Tab indicator badge — shows how many Chrome tabs are still open for this mission */
@@ -553,6 +590,7 @@ header {
 /* ---- Actions row ---- */
 .actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
 }
@@ -571,6 +609,7 @@ header {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  white-space: nowrap;
 }
 
 .action-btn:hover {
@@ -613,6 +652,17 @@ header {
 .action-btn.group-tabs:hover {
   background: rgba(90, 107, 122, 0.12);
   border-color: var(--accent-slate);
+}
+
+.action-btn.ungroup-tabs {
+  border-color: rgba(var(--group-accent-rgb, 90, 107, 122), 0.3);
+  color: var(--group-accent, var(--accent-slate));
+  background: rgba(var(--group-accent-rgb, 90, 107, 122), 0.05);
+}
+
+.action-btn.ungroup-tabs:hover {
+  background: rgba(var(--group-accent-rgb, 90, 107, 122), 0.12);
+  border-color: var(--group-accent, var(--accent-slate));
 }
 
 .action-btn.save-tabs {

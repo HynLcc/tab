@@ -48,6 +48,8 @@ const INTERACTION_TARGETS = {
     dropEffect: 'copy',
   },
 };
+const CHROME_TAB_GROUP_NONE = -1;
+const CHROME_GROUP_DROP_PREFIX = 'chrome-group-';
 let dockPreferences = { ...DEFAULT_DOCK_PREFERENCES };
 let sidebarPanelState = { ...DEFAULT_SIDEBAR_PANEL_STATE };
 let activeDragPayload = null;
@@ -63,6 +65,7 @@ let activeDragSource = null;
 
 // All open tabs — populated by fetchOpenTabs()
 let openTabs = [];
+let chromeTabGroups = [];
 
 function normalizeHexColor(value) {
   if (typeof value !== 'string') return DEFAULT_THEME_COLOR;
@@ -231,11 +234,19 @@ async function fetchOpenTabs() {
     const newtabUrl = `chrome-extension://${extensionId}/index.html`;
 
     const tabs = await chrome.tabs.query({});
+    try {
+      chromeTabGroups = chrome.tabGroups?.query ? await chrome.tabGroups.query({}) : [];
+    } catch {
+      chromeTabGroups = [];
+    }
+
     openTabs = tabs.map(t => ({
       id:       t.id,
       url:      t.url,
       title:    t.title,
       windowId: t.windowId,
+      index:    t.index,
+      groupId:  Number.isInteger(t.groupId) ? t.groupId : CHROME_TAB_GROUP_NONE,
       active:   t.active,
       // Flag Tab Out's own pages so we can detect duplicate new tabs
       isTabOut: t.url === newtabUrl || t.url === 'chrome://newtab/',
@@ -243,6 +254,7 @@ async function fetchOpenTabs() {
   } catch {
     // chrome.tabs API unavailable (shouldn't happen in an extension page)
     openTabs = [];
+    chromeTabGroups = [];
   }
 }
 
@@ -307,7 +319,26 @@ async function closeTabsExact(urls) {
  * Switches Chrome to the tab with the given URL (exact match first,
  * then hostname fallback). Also brings the window to the front.
  */
-async function focusTab(url) {
+function parseDatasetInt(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? parsed : null;
+}
+
+async function focusTab(url, tabId = null) {
+  if (Number.isInteger(tabId)) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab?.id !== undefined) {
+        await chrome.tabs.update(tab.id, { active: true });
+        await chrome.windows.update(tab.windowId, { focused: true });
+        return true;
+      }
+    } catch {
+      // Fall back to URL matching below when a tab no longer exists.
+    }
+  }
+
   if (!url) return false;
   const allTabs = await chrome.tabs.query({});
   const currentWindow = await chrome.windows.getCurrent();
@@ -350,6 +381,18 @@ async function closeSingleTabByUrl(url) {
   if (!match) return false;
   await chrome.tabs.remove(match.id);
   return true;
+}
+
+async function closeSingleTabByIdOrUrl(tabId, url) {
+  if (Number.isInteger(tabId)) {
+    try {
+      await chrome.tabs.remove(tabId);
+      return true;
+    } catch {
+      // Fall back to URL matching if the tab was already moved or closed.
+    }
+  }
+  return closeSingleTabByUrl(url);
 }
 
 /**
@@ -652,6 +695,9 @@ function createTabInteractionPayload(tab) {
   if (!tab || !tab.url) return null;
   return {
     kind: INTERACTION_KINDS.tabLink,
+    tabId: Number.isInteger(tab.id) ? tab.id : null,
+    windowId: Number.isInteger(tab.windowId) ? tab.windowId : null,
+    groupId: Number.isInteger(tab.groupId) ? tab.groupId : CHROME_TAB_GROUP_NONE,
     url: tab.url,
     title: tab.title || tab.url,
   };
@@ -660,6 +706,9 @@ function createTabInteractionPayload(tab) {
 function getTabPayloadFromElement(element) {
   if (!element) return null;
   return createTabInteractionPayload({
+    id: parseDatasetInt(element.dataset.tabId),
+    windowId: parseDatasetInt(element.dataset.windowId),
+    groupId: parseDatasetInt(element.dataset.groupId),
     url: element.dataset.tabUrl,
     title: element.dataset.tabTitle || element.getAttribute('title') || element.dataset.tabUrl,
   });
@@ -861,12 +910,46 @@ const ICONS = {
    ---------------------------------------------------------------- */
 let domainGroups = [];
 const TAB_GROUP_COLORS = ['blue', 'cyan', 'green', 'orange', 'pink', 'purple', 'red', 'yellow'];
+const CHROME_GROUP_COLOR_HEX = {
+  grey:   '#6f767d',
+  blue:   '#1a73e8',
+  red:    '#d93025',
+  yellow: '#f9ab00',
+  green:  '#188038',
+  pink:   '#d01884',
+  purple: '#9334e6',
+  cyan:   '#007b83',
+  orange: '#fa903e',
+};
 
 function getStableDomainId(domain) {
-  return 'domain-' + domain.replace(/[^a-z0-9]/g, '-');
+  return 'domain-' + String(domain).toLowerCase().replace(/[^a-z0-9]/g, '-');
+}
+
+function getStableChromeGroupId(groupId) {
+  return `chrome-${groupId}`;
+}
+
+function getChromeGroupDropTargetId(groupId) {
+  return `${CHROME_GROUP_DROP_PREFIX}${groupId}`;
+}
+
+function getChromeGroupIdFromDropTarget(targetId) {
+  if (!targetId || !targetId.startsWith(CHROME_GROUP_DROP_PREFIX)) return null;
+  return parseDatasetInt(targetId.slice(CHROME_GROUP_DROP_PREFIX.length));
+}
+
+function getChromeGroupById(groupId) {
+  return chromeTabGroups.find(group => group.id === groupId) || null;
+}
+
+function getChromeGroupLabel(group) {
+  const title = (group?.title || '').trim();
+  return title || 'Untitled group';
 }
 
 function getGroupLabel(group) {
+  if (group?.kind === 'chrome-group') return getChromeGroupLabel(group);
   return group.domain === '__landing-pages__' ? 'Homepages' : (group.label || friendlyDomain(group.domain));
 }
 
@@ -882,6 +965,44 @@ function hashString(value) {
 function getTabGroupColor(group) {
   const key = `${group.domain}:${getGroupLabel(group)}`;
   return TAB_GROUP_COLORS[hashString(key) % TAB_GROUP_COLORS.length];
+}
+
+function getChromeGroupStyle(group) {
+  const hex = CHROME_GROUP_COLOR_HEX[group.color] || CHROME_GROUP_COLOR_HEX.grey;
+  const { r, g, b } = hexToRgb(hex);
+  return `--group-accent:${hex};--group-accent-rgb:${r},${g},${b};`;
+}
+
+function buildChromeGroupCards(realTabs) {
+  const byGroupId = new Map(chromeTabGroups.map(group => [
+    group.id,
+    {
+      ...group,
+      kind: 'chrome-group',
+      tabs: [],
+      firstTabIndex: Number.POSITIVE_INFINITY,
+    },
+  ]));
+
+  for (const tab of realTabs) {
+    const group = byGroupId.get(tab.groupId);
+    if (!group) continue;
+    group.tabs.push(tab);
+    if (Number.isInteger(tab.index)) {
+      group.firstTabIndex = Math.min(group.firstTabIndex, tab.index);
+    }
+  }
+
+  return Array.from(byGroupId.values())
+    .filter(group => group.tabs.length > 0)
+    .sort((a, b) => {
+      if (a.windowId !== b.windowId) return a.windowId - b.windowId;
+      return a.firstTabIndex - b.firstTabIndex;
+    });
+}
+
+function getDashboardGroupLabel(group) {
+  return group.kind === 'chrome-group' ? getChromeGroupLabel(group) : getGroupLabel(group);
 }
 
 async function groupTabsIntoChromeGroups(group) {
@@ -932,6 +1053,58 @@ async function groupMultipleDomainSets(groups) {
   return { groupedTabs, createdGroups, windowsTouched };
 }
 
+async function moveTabToChromeGroup(payload, targetGroupId) {
+  const tabId = parseDatasetInt(payload?.tabId);
+  if (!Number.isInteger(tabId) || !Number.isInteger(targetGroupId)) {
+    return { moved: false, reason: 'missing-tab' };
+  }
+
+  const targetGroup = await chrome.tabGroups.get(targetGroupId);
+  const tab = await chrome.tabs.get(tabId);
+  if (!targetGroup || !tab?.id) return { moved: false, reason: 'missing-target' };
+  if (tab.groupId === targetGroupId) return { moved: false, reason: 'same-group' };
+
+  let tabToGroupId = tab.id;
+  if (tab.windowId !== targetGroup.windowId) {
+    const moved = await chrome.tabs.move(tab.id, {
+      windowId: targetGroup.windowId,
+      index: -1,
+    });
+    tabToGroupId = Array.isArray(moved) ? moved[0]?.id : moved?.id;
+  }
+
+  if (!Number.isInteger(tabToGroupId)) {
+    return { moved: false, reason: 'missing-tab' };
+  }
+
+  await chrome.tabs.group({ tabIds: [tabToGroupId], groupId: targetGroupId });
+  await chrome.tabGroups.update(targetGroupId, { collapsed: false });
+  await fetchOpenTabs();
+  return { moved: true, targetGroup };
+}
+
+async function ungroupChromeGroupTabs(groupId) {
+  const allTabs = await chrome.tabs.query({});
+  const tabIds = allTabs
+    .filter(tab => tab.groupId === groupId && Number.isInteger(tab.id))
+    .map(tab => tab.id);
+  if (tabIds.length === 0) return 0;
+  await chrome.tabs.ungroup(tabIds);
+  await fetchOpenTabs();
+  return tabIds.length;
+}
+
+async function closeChromeGroupTabs(groupId) {
+  const allTabs = await chrome.tabs.query({});
+  const tabIds = allTabs
+    .filter(tab => tab.groupId === groupId && Number.isInteger(tab.id))
+    .map(tab => tab.id);
+  if (tabIds.length === 0) return 0;
+  await chrome.tabs.remove(tabIds);
+  await fetchOpenTabs();
+  return tabIds.length;
+}
+
 function getGroupDuplicateMeta(group) {
   const tabs = group.tabs || [];
   const urlCounts = {};
@@ -979,6 +1152,44 @@ function getDisplayedDomainGroups(groups) {
     const aLabel = (a.label || friendlyDomain(a.domain)).toLowerCase();
     const bLabel = (b.label || friendlyDomain(b.domain)).toLowerCase();
     return aLabel.localeCompare(bLabel);
+  });
+}
+
+function getDisplayedDashboardGroups(groups) {
+  const filtered = groups.filter(group => {
+    if (dockPreferences.filter === 'duplicates') return getGroupDuplicateMeta(group).hasDupes;
+    if (dockPreferences.filter === 'homepages') return group.domain === '__landing-pages__';
+    return true;
+  });
+
+  return filtered.sort((a, b) => {
+    if (dockPreferences.sort === 'alpha') {
+      return getDashboardGroupLabel(a).toLowerCase().localeCompare(getDashboardGroupLabel(b).toLowerCase());
+    }
+
+    if (dockPreferences.sort === 'size') {
+      if (b.tabs.length !== a.tabs.length) return b.tabs.length - a.tabs.length;
+      return getDashboardGroupLabel(a).toLowerCase().localeCompare(getDashboardGroupLabel(b).toLowerCase());
+    }
+
+    const aIsChrome = a.kind === 'chrome-group';
+    const bIsChrome = b.kind === 'chrome-group';
+    if (aIsChrome !== bIsChrome) return aIsChrome ? -1 : 1;
+    if (aIsChrome && bIsChrome) {
+      if (a.windowId !== b.windowId) return a.windowId - b.windowId;
+      return a.firstTabIndex - b.firstTabIndex;
+    }
+
+    const aIsLanding = a.domain === '__landing-pages__';
+    const bIsLanding = b.domain === '__landing-pages__';
+    if (aIsLanding !== bIsLanding) return aIsLanding ? -1 : 1;
+
+    const aDupes = getGroupDuplicateMeta(a).duplicateTabs;
+    const bDupes = getGroupDuplicateMeta(b).duplicateTabs;
+    if (bDupes !== aDupes) return bDupes - aDupes;
+    if (b.tabs.length !== a.tabs.length) return b.tabs.length - a.tabs.length;
+
+    return getDashboardGroupLabel(a).toLowerCase().localeCompare(getDashboardGroupLabel(b).toLowerCase());
   });
 }
 
@@ -1046,11 +1257,14 @@ function renderTabChip(tab, urlCounts = {}, groupDomain = '') {
   const chipClass = count > 1 ? ' chip-has-dupes' : '';
   const safeUrl = escapeHtml(tab.url || '');
   const safeTitle = escapeHtml(label);
+  const safeTabId = Number.isInteger(tab.id) ? String(tab.id) : '';
+  const safeWindowId = Number.isInteger(tab.windowId) ? String(tab.windowId) : '';
+  const safeGroupId = Number.isInteger(tab.groupId) ? String(tab.groupId) : '';
   let domain = '';
   try { domain = new URL(tab.url).hostname; } catch {}
   const faviconUrl = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=16` : '';
 
-  return `<div class="page-chip clickable${chipClass}" draggable="true" data-transfer-kind="${INTERACTION_KINDS.tabLink}" data-action="focus-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" title="${safeTitle}">
+  return `<div class="page-chip clickable${chipClass}" draggable="true" data-transfer-kind="${INTERACTION_KINDS.tabLink}" data-action="focus-tab" data-tab-id="${safeTabId}" data-window-id="${safeWindowId}" data-group-id="${safeGroupId}" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" title="${safeTitle}">
     ${faviconUrl ? `<img class="chip-favicon" src="${faviconUrl}" alt="" onerror="this.style.display='none'">` : ''}
     <span class="chip-text">${safeTitle}</span>${dupeTag}
     <div class="chip-actions">
@@ -1153,6 +1367,85 @@ function renderDomainCard(group) {
         <div class="mission-page-label">tabs</div>
       </div>
     </div>`;
+}
+
+function renderChromeGroupCard(group) {
+  const tabs = group.tabs || [];
+  const tabCount = tabs.length;
+  const stableId = getStableChromeGroupId(group.id);
+  const dropTargetId = getChromeGroupDropTargetId(group.id);
+  const { urlCounts, duplicateEntries: dupeUrls, hasDupes, duplicateTabs: totalExtras } = getGroupDuplicateMeta(group);
+  const groupTitle = escapeHtml(getChromeGroupLabel(group));
+
+  const tabBadge = `<span class="open-tabs-badge">
+    ${ICONS.tabs}
+    ${tabCount} tab${tabCount !== 1 ? 's' : ''} open
+  </span>`;
+
+  const groupSwatch = '<span class="chrome-group-swatch" aria-hidden="true"></span>';
+
+  const collapsedBadge = group.collapsed
+    ? `<span class="open-tabs-badge chrome-group-state">collapsed</span>`
+    : '';
+
+  const dupeBadge = hasDupes
+    ? `<span class="open-tabs-badge" style="color:var(--accent-amber);background:rgba(200,113,58,0.08);">
+        ${totalExtras} duplicate${totalExtras !== 1 ? 's' : ''}
+      </span>`
+    : '';
+
+  const seen = new Set();
+  const uniqueTabs = [];
+  for (const tab of tabs) {
+    if (!seen.has(tab.url)) { seen.add(tab.url); uniqueTabs.push(tab); }
+  }
+
+  const visibleTabs = uniqueTabs.slice(0, 8);
+  const extraCount = uniqueTabs.length - visibleTabs.length;
+  const pageChips = visibleTabs.map(tab => renderTabChip(tab, urlCounts, '')).join('')
+    + (extraCount > 0 ? buildOverflowChips(uniqueTabs.slice(8), urlCounts, '') : '');
+
+  let actionsHtml = `
+    <button class="action-btn ungroup-tabs" data-action="ungroup-chrome-group" data-chrome-group-id="${group.id}">
+      ${ICONS.group}
+      Ungroup
+    </button>
+    <button class="action-btn close-tabs" data-action="close-chrome-group-tabs" data-chrome-group-id="${group.id}">
+      ${ICONS.close}
+      Close all ${tabCount} tab${tabCount !== 1 ? 's' : ''}
+    </button>`;
+
+  if (hasDupes) {
+    const dupeUrlsEncoded = dupeUrls.map(([url]) => encodeURIComponent(url)).join(',');
+    actionsHtml += `
+      <button class="action-btn" data-action="dedup-keep-one" data-dupe-urls="${dupeUrlsEncoded}">
+        Close ${totalExtras} duplicate${totalExtras !== 1 ? 's' : ''}
+      </button>`;
+  }
+
+  return `
+    <div class="mission-card chrome-group-card ${hasDupes ? 'has-amber-bar' : ''}" data-domain-id="${stableId}" data-chrome-group-id="${group.id}" data-drop-target="${dropTargetId}" style="${getChromeGroupStyle(group)}" title="Move a tab into ${groupTitle}">
+      <div class="status-bar"></div>
+      <div class="mission-content">
+        <div class="mission-top">
+          <span class="mission-name">${groupTitle}</span>
+          ${groupSwatch}
+          ${tabBadge}
+          ${collapsedBadge}
+          ${dupeBadge}
+        </div>
+        <div class="mission-pages">${pageChips}</div>
+        <div class="actions">${actionsHtml}</div>
+      </div>
+      <div class="mission-meta">
+        <div class="mission-page-count">${tabCount}</div>
+        <div class="mission-page-label">tabs</div>
+      </div>
+    </div>`;
+}
+
+function renderDashboardGroupCard(group) {
+  return group.kind === 'chrome-group' ? renderChromeGroupCard(group) : renderDomainCard(group);
 }
 
 
@@ -1369,6 +1662,11 @@ async function renderStaticDashboard() {
   // --- Fetch tabs ---
   await fetchOpenTabs();
   const realTabs = getRealTabs();
+  const chromeGroupCards = buildChromeGroupCards(realTabs);
+  const chromeGroupedTabIds = new Set(
+    chromeGroupCards.flatMap(group => group.tabs.map(tab => tab.id))
+  );
+  const ungroupedRealTabs = realTabs.filter(tab => !chromeGroupedTabIds.has(tab.id));
 
   // --- Group tabs by domain ---
   // Landing pages (Gmail inbox, Twitter home, etc.) get their own special group
@@ -1427,7 +1725,7 @@ async function renderStaticDashboard() {
     } catch { return null; }
   }
 
-  for (const tab of realTabs) {
+  for (const tab of ungroupedRealTabs) {
     try {
       if (isLandingPage(tab.url)) {
         landingTabs.push(tab);
@@ -1487,23 +1785,32 @@ async function renderStaticDashboard() {
   const openTabsMissionsEl   = document.getElementById('openTabsMissions');
   const openTabsSectionCount = document.getElementById('openTabsSectionCount');
   const openTabsSectionTitle = document.getElementById('openTabsSectionTitle');
-  const displayedGroups      = getDisplayedDomainGroups(domainGroups);
+  const displayedDomainGroups = getDisplayedDomainGroups(domainGroups);
+  const displayedGroups      = getDisplayedDashboardGroups([...chromeGroupCards, ...domainGroups]);
   const sectionTitles = {
-    all: 'Open tabs',
+    all: 'Groups & tabs',
     duplicates: 'Duplicate cleanup',
     homepages: 'Homepages',
   };
 
   if (displayedGroups.length > 0 && openTabsSection) {
     if (openTabsSectionTitle) openTabsSectionTitle.textContent = sectionTitles[dockPreferences.filter] || 'Open tabs';
-    openTabsSectionCount.innerHTML = `<span class="section-count-text">${displayedGroups.length} domain${displayedGroups.length !== 1 ? 's' : ''}</span><span class="meta-separator section-separator" aria-hidden="true"></span><button class="action-btn group-tabs" data-action="group-all-domain-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.group} Group all ${displayedGroups.length}</button><button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
-    openTabsMissionsEl.innerHTML = displayedGroups.map(g => renderDomainCard(g)).join('');
+    const countParts = [];
+    const visibleChromeGroups = displayedGroups.filter(group => group.kind === 'chrome-group').length;
+    const visibleDomainGroups = displayedGroups.length - visibleChromeGroups;
+    if (visibleChromeGroups > 0) countParts.push(`${visibleChromeGroups} group${visibleChromeGroups !== 1 ? 's' : ''}`);
+    if (visibleDomainGroups > 0) countParts.push(`${visibleDomainGroups} domain${visibleDomainGroups !== 1 ? 's' : ''}`);
+    const groupAllButton = displayedDomainGroups.length > 0
+      ? `<button class="action-btn group-tabs" data-action="group-all-domain-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.group} Group ungrouped ${displayedDomainGroups.length}</button>`
+      : '';
+    openTabsSectionCount.innerHTML = `<span class="section-count-text">${countParts.join(' / ') || '0 groups'}</span><span class="meta-separator section-separator" aria-hidden="true"></span>${groupAllButton}<button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
+    openTabsMissionsEl.innerHTML = displayedGroups.map(g => renderDashboardGroupCard(g)).join('');
     openTabsSection.style.display = 'block';
   } else if (openTabsSection) {
     openTabsSection.style.display = 'block';
     if (openTabsSectionTitle) openTabsSectionTitle.textContent = sectionTitles[dockPreferences.filter] || 'Open tabs';
     openTabsMissionsEl.innerHTML = '<div style="font-size:13px;color:var(--muted);padding:12px 0">Nothing matches this dock filter right now.</div>';
-    openTabsSectionCount.innerHTML = `<span class="section-count-text">0 domains</span><span class="meta-separator section-separator" aria-hidden="true"></span><button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
+    openTabsSectionCount.innerHTML = `<span class="section-count-text">0 groups</span><span class="meta-separator section-separator" aria-hidden="true"></span><button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
   }
 
   // --- Footer stats ---
@@ -1523,8 +1830,25 @@ async function renderDashboard() {
 
 function canTargetAcceptPayload(targetId, payload) {
   if (!targetId || !payload) return false;
-  const target = INTERACTION_TARGETS[targetId];
+  const target = getInteractionTarget(targetId);
   return !!target && target.accepts.has(payload.kind);
+}
+
+function getInteractionTarget(targetId) {
+  if (!targetId) return null;
+  if (INTERACTION_TARGETS[targetId]) return INTERACTION_TARGETS[targetId];
+
+  const chromeGroupId = getChromeGroupIdFromDropTarget(targetId);
+  if (Number.isInteger(chromeGroupId)) {
+    return {
+      accepts: new Set([INTERACTION_KINDS.tabLink]),
+      actionId: 'move-to-chrome-group',
+      dropEffect: 'move',
+      chromeGroupId,
+    };
+  }
+
+  return null;
 }
 
 function updateDropTargetUI(payload, activeTargetId = null) {
@@ -1555,7 +1879,7 @@ function clearDragState() {
 const INTERACTION_ACTIONS = {
   'save-for-later': async (payload) => {
     await saveTabForLater({ url: payload.url, title: payload.title });
-    await closeSingleTabByUrl(payload.url);
+    await closeSingleTabByIdOrUrl(parseDatasetInt(payload.tabId), payload.url);
     await fetchOpenTabs();
     showToast('Saved for later');
     await renderDashboard();
@@ -1567,10 +1891,25 @@ const INTERACTION_ACTIONS = {
     await renderSidebarColumn();
     return true;
   },
+  'move-to-chrome-group': async (payload, target) => {
+    const result = await moveTabToChromeGroup(payload, target.chromeGroupId);
+    if (result.reason === 'same-group') {
+      showToast('Already in that group');
+      return true;
+    }
+    if (!result.moved) {
+      showToast('Could not move tab');
+      return false;
+    }
+    const targetLabel = getChromeGroupLabel(result.targetGroup);
+    showToast(`Moved tab to ${targetLabel}`);
+    await renderDashboard();
+    return true;
+  },
 };
 
 async function runInteractionTarget(targetId, payload) {
-  const target = INTERACTION_TARGETS[targetId];
+  const target = getInteractionTarget(targetId);
   if (!target || !canTargetAcceptPayload(targetId, payload)) return false;
   const handler = INTERACTION_ACTIONS[target.actionId];
   if (!handler) return false;
@@ -1616,7 +1955,7 @@ document.addEventListener('dragover', (e) => {
 
   e.preventDefault();
   if (e.dataTransfer) {
-    e.dataTransfer.dropEffect = INTERACTION_TARGETS[targetId].dropEffect;
+    e.dataTransfer.dropEffect = getInteractionTarget(targetId)?.dropEffect || 'move';
   }
   updateDropTargetUI(activeDragPayload, targetId);
 });
@@ -1775,7 +2114,8 @@ document.addEventListener('click', async (e) => {
   // ---- Focus a specific tab ----
   if (action === 'focus-tab') {
     const tabUrl = actionEl.dataset.tabUrl;
-    if (tabUrl) await focusTab(tabUrl);
+    const tabId = parseDatasetInt(actionEl.dataset.tabId);
+    if (tabUrl || Number.isInteger(tabId)) await focusTab(tabUrl, tabId);
     return;
   }
 
@@ -1783,10 +2123,11 @@ document.addEventListener('click', async (e) => {
   if (action === 'close-single-tab') {
     e.stopPropagation(); // don't trigger parent chip's focus-tab
     const tabUrl = actionEl.dataset.tabUrl;
-    if (!tabUrl) return;
+    const tabId = parseDatasetInt(actionEl.closest('.page-chip')?.dataset.tabId || actionEl.dataset.tabId);
+    if (!tabUrl && !Number.isInteger(tabId)) return;
 
     // Close the tab in Chrome directly
-    await closeSingleTabByUrl(tabUrl);
+    await closeSingleTabByIdOrUrl(tabId, tabUrl);
     await fetchOpenTabs();
 
     // Animate the chip row out
@@ -1819,7 +2160,7 @@ document.addEventListener('click', async (e) => {
   // ---- Save a single tab for later (then close it) ----
   if (action === 'defer-single-tab') {
     e.stopPropagation();
-    const payload = getTabPayloadFromElement(actionEl);
+    const payload = getTabPayloadFromElement(actionEl.closest('.page-chip') || actionEl);
     if (!payload) return;
 
     try {
@@ -1871,6 +2212,36 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
+  if (action === 'ungroup-chrome-group') {
+    const groupId = parseDatasetInt(actionEl.dataset.chromeGroupId);
+    if (!Number.isInteger(groupId)) return;
+
+    try {
+      const count = await ungroupChromeGroupTabs(groupId);
+      await renderDashboard();
+      showToast(count > 0 ? `Ungrouped ${count} tab${count !== 1 ? 's' : ''}` : 'Group is already empty');
+    } catch (err) {
+      console.error('[tab-out] Failed to ungroup Chrome group:', err);
+      showToast('Could not ungroup tabs');
+    }
+    return;
+  }
+
+  if (action === 'close-chrome-group-tabs') {
+    const groupId = parseDatasetInt(actionEl.dataset.chromeGroupId);
+    if (!Number.isInteger(groupId)) return;
+
+    try {
+      const count = await closeChromeGroupTabs(groupId);
+      await renderDashboard();
+      showToast(count > 0 ? `Closed ${count} grouped tab${count !== 1 ? 's' : ''}` : 'Group is already empty');
+    } catch (err) {
+      console.error('[tab-out] Failed to close Chrome group tabs:', err);
+      showToast('Could not close grouped tabs');
+    }
+    return;
+  }
+
   // ---- Close all tabs in a domain group ----
   if (action === 'group-domain-tabs') {
     const domainId = actionEl.dataset.domainId;
@@ -1885,6 +2256,7 @@ document.addEventListener('click', async (e) => {
       }
       const label = getGroupLabel(group);
       showToast(`Grouped ${result.groupedTabs} tab${result.groupedTabs !== 1 ? 's' : ''} into ${result.createdGroups} Chrome group${result.createdGroups !== 1 ? 's' : ''} for ${label}`);
+      await renderDashboard();
     } catch (err) {
       console.error('[tab-out] Failed to group domain tabs:', err);
       showToast('Could not create Chrome tab group');
@@ -1906,6 +2278,7 @@ document.addEventListener('click', async (e) => {
         return;
       }
       showToast(`Grouped ${result.groupedTabs} tabs into ${result.createdGroups} Chrome groups`);
+      await renderDashboard();
     } catch (err) {
       console.error('[tab-out] Failed to group all domain tabs:', err);
       showToast('Could not group tabs');
