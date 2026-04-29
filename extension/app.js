@@ -476,7 +476,7 @@ async function closeTabOutDupes() {
  * saveTabForLater(tab)
  *
  * Saves a single tab to the "Saved for Later" list in chrome.storage.local.
- * @param {{ url: string, title: string }} tab
+ * @param {{ url: string, title: string, faviconUrl?: string }} tab
  */
 async function saveTabForLater(tab) {
   const { [STORAGE_KEYS.deferred]: deferred = [] } = await chrome.storage.local.get(STORAGE_KEYS.deferred);
@@ -484,6 +484,7 @@ async function saveTabForLater(tab) {
     id:        Date.now().toString(),
     url:       tab.url,
     title:     tab.title,
+    faviconUrl: tab.faviconUrl || '',
     savedAt:   new Date().toISOString(),
     completed: false,
     dismissed: false,
@@ -543,6 +544,7 @@ async function saveFavoriteLink(link) {
 
   if (existing) {
     existing.title = link.title || existing.title;
+    existing.faviconUrl = link.faviconUrl || existing.faviconUrl || '';
     existing.updatedAt = now;
     await chrome.storage.local.set({ [STORAGE_KEYS.favorites]: favorites });
     return { status: 'existing', item: existing };
@@ -552,6 +554,7 @@ async function saveFavoriteLink(link) {
     id: Date.now().toString(),
     url: link.url,
     title: link.title,
+    faviconUrl: link.faviconUrl || '',
     createdAt: now,
     updatedAt: now,
     dismissed: false,
@@ -700,6 +703,7 @@ function createTabInteractionPayload(tab) {
     groupId: Number.isInteger(tab.groupId) ? tab.groupId : CHROME_TAB_GROUP_NONE,
     url: tab.url,
     title: tab.title || tab.url,
+    faviconUrl: tab.favIconUrl || tab.faviconUrl || '',
   };
 }
 
@@ -711,6 +715,7 @@ function getTabPayloadFromElement(element) {
     groupId: parseDatasetInt(element.dataset.groupId),
     url: element.dataset.tabUrl,
     title: element.dataset.tabTitle || element.getAttribute('title') || element.dataset.tabUrl,
+    faviconUrl: element.dataset.tabFaviconUrl || '',
   });
 }
 
@@ -1237,6 +1242,34 @@ function checkTabOutDupes() {
   }
 }
 
+const FAVICON_SOURCE_SIZE = 64;
+
+function getFallbackFaviconUrl(pageUrl, size = FAVICON_SOURCE_SIZE) {
+  if (!pageUrl) return '';
+  return `https://www.google.com/s2/favicons?domain_url=${encodeURIComponent(pageUrl)}&sz=${size}`;
+}
+
+function getTabFaviconUrls(tab) {
+  return {
+    primary: tab.favIconUrl || tab.faviconUrl || '',
+    fallback: getFallbackFaviconUrl(tab.url),
+  };
+}
+
+function getSavedFaviconUrls(item) {
+  return {
+    primary: item.faviconUrl || '',
+    fallback: getFallbackFaviconUrl(item.url),
+  };
+}
+
+function renderFaviconImg(src, fallbackSrc, className) {
+  const safeSrc = escapeHtml(src || fallbackSrc || '');
+  const safeFallbackSrc = escapeHtml(src ? fallbackSrc : '');
+  if (!safeSrc) return '';
+
+  return `<img class="${className}" src="${safeSrc}" data-fallback-favicon-url="${safeFallbackSrc}" alt="" onerror="if(this.dataset.fallbackFaviconUrl){this.src=this.dataset.fallbackFaviconUrl;this.dataset.fallbackFaviconUrl='';}else{this.style.display='none';}">`;
+}
 
 /* ----------------------------------------------------------------
    OVERFLOW CHIPS ("+N more" expand button in domain cards)
@@ -1260,12 +1293,10 @@ function renderTabChip(tab, urlCounts = {}, groupDomain = '') {
   const safeTabId = Number.isInteger(tab.id) ? String(tab.id) : '';
   const safeWindowId = Number.isInteger(tab.windowId) ? String(tab.windowId) : '';
   const safeGroupId = Number.isInteger(tab.groupId) ? String(tab.groupId) : '';
-  let domain = '';
-  try { domain = new URL(tab.url).hostname; } catch {}
-  const faviconUrl = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=16` : '';
+  const faviconUrls = getTabFaviconUrls(tab);
 
-  return `<div class="page-chip clickable${chipClass}" draggable="true" data-transfer-kind="${INTERACTION_KINDS.tabLink}" data-action="focus-tab" data-tab-id="${safeTabId}" data-window-id="${safeWindowId}" data-group-id="${safeGroupId}" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" title="${safeTitle}">
-    ${faviconUrl ? `<img class="chip-favicon" src="${faviconUrl}" alt="" onerror="this.style.display='none'">` : ''}
+  return `<div class="page-chip clickable${chipClass}" draggable="true" data-transfer-kind="${INTERACTION_KINDS.tabLink}" data-action="focus-tab" data-tab-id="${safeTabId}" data-window-id="${safeWindowId}" data-group-id="${safeGroupId}" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" data-tab-favicon-url="${escapeHtml(faviconUrls.primary)}" title="${safeTitle}">
+    ${renderFaviconImg(faviconUrls.primary, faviconUrls.fallback, 'chip-favicon')}
     <span class="chip-text">${safeTitle}</span>${dupeTag}
     <div class="chip-actions">
       <button class="chip-action chip-save" data-action="defer-single-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" title="Save for later">
@@ -1565,7 +1596,7 @@ async function renderDeferredSection() {
 function renderFavoriteItem(item) {
   let domain = '';
   try { domain = new URL(item.url).hostname.replace(/^www\./, ''); } catch {}
-  const faviconUrl = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=16` : '';
+  const faviconUrls = getSavedFaviconUrls(item);
   const title = escapeHtml(item.title || item.url);
   const safeUrl = escapeHtml(item.url || '');
   const ago = timeAgo(item.updatedAt || item.createdAt);
@@ -1573,7 +1604,7 @@ function renderFavoriteItem(item) {
   return `
     <div class="favorite-item" data-favorite-id="${item.id}">
       <button class="favorite-link" type="button" data-action="open-favorite-link" data-favorite-url="${safeUrl}" title="${title}">
-        ${faviconUrl ? `<img src="${faviconUrl}" alt="" class="favorite-favicon" onerror="this.style.display='none'">` : ''}
+        ${renderFaviconImg(faviconUrls.primary, faviconUrls.fallback, 'favorite-favicon')}
         <span class="favorite-link-text">${title}</span>
       </button>
       <div class="favorite-meta">
@@ -1595,7 +1626,7 @@ function renderFavoriteItem(item) {
 function renderDeferredItem(item) {
   let domain = '';
   try { domain = new URL(item.url).hostname.replace(/^www\./, ''); } catch {}
-  const faviconUrl = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=16` : '';
+  const faviconUrls = getSavedFaviconUrls(item);
   const ago = timeAgo(item.savedAt);
   const title = escapeHtml(item.title || item.url);
   const safeUrl = escapeHtml(item.url || '');
@@ -1605,7 +1636,7 @@ function renderDeferredItem(item) {
       <input type="checkbox" class="deferred-checkbox" data-action="check-deferred" data-deferred-id="${item.id}">
       <div class="deferred-info">
         <a href="${safeUrl}" target="_blank" rel="noopener" class="deferred-title" title="${title}">
-          ${faviconUrl ? `<img src="${faviconUrl}" alt="" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px" onerror="this.style.display='none'">` : ''}${title}
+          ${renderFaviconImg(faviconUrls.primary, faviconUrls.fallback, 'deferred-favicon')}${title}
         </a>
         <div class="deferred-meta">
           <span>${escapeHtml(domain)}</span>
@@ -1878,7 +1909,7 @@ function clearDragState() {
 
 const INTERACTION_ACTIONS = {
   'save-for-later': async (payload) => {
-    await saveTabForLater({ url: payload.url, title: payload.title });
+    await saveTabForLater({ url: payload.url, title: payload.title, faviconUrl: payload.faviconUrl });
     await closeSingleTabByIdOrUrl(parseDatasetInt(payload.tabId), payload.url);
     await fetchOpenTabs();
     showToast('Saved for later');
@@ -1886,7 +1917,7 @@ const INTERACTION_ACTIONS = {
     return true;
   },
   'save-common-url': async (payload) => {
-    const result = await saveFavoriteLink({ url: payload.url, title: payload.title });
+    const result = await saveFavoriteLink({ url: payload.url, title: payload.title, faviconUrl: payload.faviconUrl });
     showToast(result.status === 'existing' ? 'Already in common urls' : 'Added to common urls');
     await renderSidebarColumn();
     return true;
