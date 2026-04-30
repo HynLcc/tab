@@ -32,6 +32,7 @@ const DOCK_FILTER_OPTIONS = new Set(['all', 'duplicates', 'homepages']);
 const STORAGE_KEYS = {
   deferred: 'deferred',
   favorites: 'favoriteLinks',
+  pendingGroups: 'pendingChromeGroups',
 };
 const INTERACTION_KINDS = {
   tabLink: 'tab-link',
@@ -49,11 +50,16 @@ const INTERACTION_TARGETS = {
   },
 };
 const CHROME_TAB_GROUP_NONE = -1;
+const DASHBOARD_REFRESH_DEBOUNCE_MS = 150;
 const CHROME_GROUP_DROP_PREFIX = 'chrome-group-';
+const PENDING_GROUP_DROP_PREFIX = 'pending-group-';
 let dockPreferences = { ...DEFAULT_DOCK_PREFERENCES };
 let sidebarPanelState = { ...DEFAULT_SIDEBAR_PANEL_STATE };
 let activeDragPayload = null;
 let activeDragSource = null;
+let dashboardRefreshTimer = null;
+let dashboardRefreshInFlight = false;
+let dashboardRefreshQueued = false;
 
 
 /* ----------------------------------------------------------------
@@ -66,6 +72,41 @@ let activeDragSource = null;
 // All open tabs — populated by fetchOpenTabs()
 let openTabs = [];
 let chromeTabGroups = [];
+let pendingChromeGroups = [];
+
+function normalizeChromeTab(t, extensionId = '') {
+  const newtabUrl = `chrome-extension://${extensionId}/index.html`;
+
+  return {
+    id:       t.id,
+    url:      t.url,
+    title:    t.title,
+    windowId: t.windowId,
+    index:    t.index,
+    groupId:  Number.isInteger(t.groupId) ? t.groupId : CHROME_TAB_GROUP_NONE,
+    active:   t.active,
+    favIconUrl: t.favIconUrl,
+    // Flag Tab Out's own pages so we can detect duplicate new tabs
+    isTabOut: t.url === newtabUrl || t.url === 'chrome://newtab/',
+  };
+}
+
+async function readChromeSnapshot() {
+  const extensionId = chrome.runtime.id;
+  const tabs = await chrome.tabs.query({});
+  let groups = [];
+
+  try {
+    groups = chrome.tabGroups?.query ? await chrome.tabGroups.query({}) : [];
+  } catch {
+    groups = [];
+  }
+
+  return {
+    tabs: tabs.map(t => normalizeChromeTab(t, extensionId)),
+    groups,
+  };
+}
 
 function normalizeHexColor(value) {
   if (typeof value !== 'string') return DEFAULT_THEME_COLOR;
@@ -229,28 +270,9 @@ async function resetThemeColor() {
  */
 async function fetchOpenTabs() {
   try {
-    const extensionId = chrome.runtime.id;
-    // The new URL for this page is now index.html (not newtab.html)
-    const newtabUrl = `chrome-extension://${extensionId}/index.html`;
-
-    const tabs = await chrome.tabs.query({});
-    try {
-      chromeTabGroups = chrome.tabGroups?.query ? await chrome.tabGroups.query({}) : [];
-    } catch {
-      chromeTabGroups = [];
-    }
-
-    openTabs = tabs.map(t => ({
-      id:       t.id,
-      url:      t.url,
-      title:    t.title,
-      windowId: t.windowId,
-      index:    t.index,
-      groupId:  Number.isInteger(t.groupId) ? t.groupId : CHROME_TAB_GROUP_NONE,
-      active:   t.active,
-      // Flag Tab Out's own pages so we can detect duplicate new tabs
-      isTabOut: t.url === newtabUrl || t.url === 'chrome://newtab/',
-    }));
+    const snapshot = await readChromeSnapshot();
+    openTabs = snapshot.tabs;
+    chromeTabGroups = snapshot.groups;
   } catch {
     // chrome.tabs API unavailable (shouldn't happen in an extension page)
     openTabs = [];
@@ -465,7 +487,6 @@ async function closeTabOutDupes() {
        url: "https://example.com",
        title: "Example Page",
        savedAt: "2026-04-04T10:00:00.000Z",  // ISO date string
-       completed: false,             // true = checked off (archived)
        dismissed: false              // true = dismissed without reading
      },
      ...
@@ -476,7 +497,7 @@ async function closeTabOutDupes() {
  * saveTabForLater(tab)
  *
  * Saves a single tab to the "Saved for Later" list in chrome.storage.local.
- * @param {{ url: string, title: string }} tab
+ * @param {{ url: string, title: string, faviconUrl?: string }} tab
  */
 async function saveTabForLater(tab) {
   const { [STORAGE_KEYS.deferred]: deferred = [] } = await chrome.storage.local.get(STORAGE_KEYS.deferred);
@@ -484,8 +505,8 @@ async function saveTabForLater(tab) {
     id:        Date.now().toString(),
     url:       tab.url,
     title:     tab.title,
+    faviconUrl: tab.faviconUrl || '',
     savedAt:   new Date().toISOString(),
-    completed: false,
     dismissed: false,
   });
   await chrome.storage.local.set({ [STORAGE_KEYS.deferred]: deferred });
@@ -496,28 +517,26 @@ async function saveTabForLater(tab) {
  *
  * Returns all saved tabs from chrome.storage.local.
  * Filters out dismissed items (those are gone for good).
- * Splits into active (not completed) and archived (completed).
+ * Returns only active saved tabs. Completed legacy items stay hidden.
  */
 async function getSavedTabs() {
   const { [STORAGE_KEYS.deferred]: deferred = [] } = await chrome.storage.local.get(STORAGE_KEYS.deferred);
   const visible = deferred.filter(t => !t.dismissed);
   return {
-    active:   visible.filter(t => !t.completed),
-    archived: visible.filter(t => t.completed),
+    active: visible.filter(t => !t.completed),
   };
 }
 
 /**
  * checkOffSavedTab(id)
  *
- * Marks a saved tab as completed (checked off). It moves to the archive.
+ * Removes a saved tab when checked off.
  */
 async function checkOffSavedTab(id) {
   const { [STORAGE_KEYS.deferred]: deferred = [] } = await chrome.storage.local.get(STORAGE_KEYS.deferred);
   const tab = deferred.find(t => t.id === id);
   if (tab) {
-    tab.completed = true;
-    tab.completedAt = new Date().toISOString();
+    tab.dismissed = true;
     await chrome.storage.local.set({ [STORAGE_KEYS.deferred]: deferred });
   }
 }
@@ -543,6 +562,7 @@ async function saveFavoriteLink(link) {
 
   if (existing) {
     existing.title = link.title || existing.title;
+    existing.faviconUrl = link.faviconUrl || existing.faviconUrl || '';
     existing.updatedAt = now;
     await chrome.storage.local.set({ [STORAGE_KEYS.favorites]: favorites });
     return { status: 'existing', item: existing };
@@ -552,6 +572,7 @@ async function saveFavoriteLink(link) {
     id: Date.now().toString(),
     url: link.url,
     title: link.title,
+    faviconUrl: link.faviconUrl || '',
     createdAt: now,
     updatedAt: now,
     dismissed: false,
@@ -700,6 +721,7 @@ function createTabInteractionPayload(tab) {
     groupId: Number.isInteger(tab.groupId) ? tab.groupId : CHROME_TAB_GROUP_NONE,
     url: tab.url,
     title: tab.title || tab.url,
+    faviconUrl: tab.favIconUrl || tab.faviconUrl || '',
   };
 }
 
@@ -711,6 +733,7 @@ function getTabPayloadFromElement(element) {
     groupId: parseDatasetInt(element.dataset.groupId),
     url: element.dataset.tabUrl,
     title: element.dataset.tabTitle || element.getAttribute('title') || element.dataset.tabUrl,
+    faviconUrl: element.dataset.tabFaviconUrl || '',
   });
 }
 
@@ -899,9 +922,11 @@ function smartTitle(title, url) {
 const ICONS = {
   tabs:    `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 8.25V18a2.25 2.25 0 0 0 2.25 2.25h13.5A2.25 2.25 0 0 0 21 18V8.25m-18 0V6a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 6v2.25m-18 0h18" /></svg>`,
   close:   `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>`,
-  archive: `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 0 1-2.247 2.118H6.622a2.25 2.25 0 0 1-2.247-2.118L3.75 7.5m6 4.125l2.25 2.25m0 0l2.25 2.25M12 13.875l2.25-2.25M12 13.875l-2.25 2.25M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125Z" /></svg>`,
   focus:   `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m4.5 19.5 15-15m0 0H8.25m11.25 0v11.25" /></svg>`,
   group:   `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.9" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 6.75h9m-9 5.25h9m-9 5.25h5.25M4.5 5.25A1.5 1.5 0 0 1 6 3.75h12A1.5 1.5 0 0 1 19.5 5.25v13.5A1.5 1.5 0 0 1 18 20.25H6A1.5 1.5 0 0 1 4.5 18.75V5.25Z" /></svg>`,
+  plus:    `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 5v14m7-7H5" /></svg>`,
+  edit:    `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.9" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L7.582 19.07a4.5 4.5 0 0 1-1.897 1.13L3 21l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l11.932-11.931Z" /></svg>`,
+  trash:   `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.9" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166M19.228 5.79 18.16 19.673A2.25 2.25 0 0 1 15.916 21.75H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .563c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" /></svg>`,
 };
 
 
@@ -909,7 +934,16 @@ const ICONS = {
    IN-MEMORY STORE FOR OPEN-TAB GROUPS
    ---------------------------------------------------------------- */
 let domainGroups = [];
+const BASE_LANDING_PAGE_PATTERNS = [
+  { hostname: 'mail.google.com', test: (p, h) =>
+      !h.includes('#inbox/') && !h.includes('#sent/') && !h.includes('#search/') },
+  { hostname: 'x.com',               pathExact: ['/home'] },
+  { hostname: 'www.linkedin.com',    pathExact: ['/'] },
+  { hostname: 'github.com',          pathExact: ['/'] },
+  { hostname: 'www.youtube.com',     pathExact: ['/'] },
+];
 const TAB_GROUP_COLORS = ['blue', 'cyan', 'green', 'orange', 'pink', 'purple', 'red', 'yellow'];
+const CHROME_GROUP_COLOR_ORDER = ['grey', ...TAB_GROUP_COLORS];
 const CHROME_GROUP_COLOR_HEX = {
   grey:   '#6f767d',
   blue:   '#1a73e8',
@@ -934,13 +968,129 @@ function getChromeGroupDropTargetId(groupId) {
   return `${CHROME_GROUP_DROP_PREFIX}${groupId}`;
 }
 
+function getPendingGroupDropTargetId(groupId) {
+  return `${PENDING_GROUP_DROP_PREFIX}${groupId}`;
+}
+
 function getChromeGroupIdFromDropTarget(targetId) {
   if (!targetId || !targetId.startsWith(CHROME_GROUP_DROP_PREFIX)) return null;
   return parseDatasetInt(targetId.slice(CHROME_GROUP_DROP_PREFIX.length));
 }
 
+function getPendingGroupIdFromDropTarget(targetId) {
+  if (!targetId || !targetId.startsWith(PENDING_GROUP_DROP_PREFIX)) return null;
+  return targetId.slice(PENDING_GROUP_DROP_PREFIX.length) || null;
+}
+
 function getChromeGroupById(groupId) {
   return chromeTabGroups.find(group => group.id === groupId) || null;
+}
+
+function getLandingPagePatterns() {
+  const localPatterns = typeof LOCAL_LANDING_PAGE_PATTERNS !== 'undefined' ? LOCAL_LANDING_PAGE_PATTERNS : [];
+  return [...BASE_LANDING_PAGE_PATTERNS, ...localPatterns];
+}
+
+function isLandingPageUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return getLandingPagePatterns().some(p => {
+      const hostnameMatch = p.hostname
+        ? parsed.hostname === p.hostname
+        : p.hostnameEndsWith
+          ? parsed.hostname.endsWith(p.hostnameEndsWith)
+          : false;
+      if (!hostnameMatch) return false;
+      if (p.test)       return p.test(parsed.pathname, url);
+      if (p.pathPrefix) return parsed.pathname.startsWith(p.pathPrefix);
+      if (p.pathExact)  return p.pathExact.includes(parsed.pathname);
+      return parsed.pathname === '/';
+    });
+  } catch {
+    return false;
+  }
+}
+
+function matchCustomGroup(url) {
+  const customGroups = typeof LOCAL_CUSTOM_GROUPS !== 'undefined' ? LOCAL_CUSTOM_GROUPS : [];
+
+  try {
+    const parsed = new URL(url);
+    return customGroups.find(r => {
+      const hostMatch = r.hostname
+        ? parsed.hostname === r.hostname
+        : r.hostnameEndsWith
+          ? parsed.hostname.endsWith(r.hostnameEndsWith)
+          : false;
+      if (!hostMatch) return false;
+      if (r.pathPrefix) return parsed.pathname.startsWith(r.pathPrefix);
+      return true;
+    }) || null;
+  } catch {
+    return null;
+  }
+}
+
+function getDomainGroupSeedForTab(tab) {
+  if (isLandingPageUrl(tab.url)) {
+    return { domain: '__landing-pages__' };
+  }
+
+  const customRule = matchCustomGroup(tab.url);
+  if (customRule) {
+    return {
+      domain: customRule.groupKey,
+      label: customRule.groupLabel,
+    };
+  }
+
+  try {
+    const domain = tab.url?.startsWith('file://')
+      ? 'local-files'
+      : new URL(tab.url).hostname;
+    return domain ? { domain } : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildDomainGroupsFromTabs(tabs) {
+  const groupMap = {};
+
+  for (const tab of tabs) {
+    const seed = getDomainGroupSeedForTab(tab);
+    if (!seed?.domain) continue;
+
+    if (!groupMap[seed.domain]) {
+      groupMap[seed.domain] = {
+        domain: seed.domain,
+        ...(seed.label ? { label: seed.label } : {}),
+        tabs: [],
+      };
+    }
+
+    groupMap[seed.domain].tabs.push(tab);
+  }
+
+  const landingPatterns = getLandingPagePatterns();
+  const landingHostnames = new Set(landingPatterns.map(p => p.hostname).filter(Boolean));
+  const landingSuffixes = landingPatterns.map(p => p.hostnameEndsWith).filter(Boolean);
+  const isLandingDomain = domain => {
+    if (landingHostnames.has(domain)) return true;
+    return landingSuffixes.some(s => domain.endsWith(s));
+  };
+
+  return Object.values(groupMap).sort((a, b) => {
+    const aIsLanding = a.domain === '__landing-pages__';
+    const bIsLanding = b.domain === '__landing-pages__';
+    if (aIsLanding !== bIsLanding) return aIsLanding ? -1 : 1;
+
+    const aIsPriority = isLandingDomain(a.domain);
+    const bIsPriority = isLandingDomain(b.domain);
+    if (aIsPriority !== bIsPriority) return aIsPriority ? -1 : 1;
+
+    return b.tabs.length - a.tabs.length;
+  });
 }
 
 function getChromeGroupLabel(group) {
@@ -973,8 +1123,25 @@ function getChromeGroupStyle(group) {
   return `--group-accent:${hex};--group-accent-rgb:${r},${g},${b};`;
 }
 
-function buildChromeGroupCards(realTabs) {
-  const byGroupId = new Map(chromeTabGroups.map(group => [
+function getNextChromeGroupColor(color) {
+  const currentIndex = CHROME_GROUP_COLOR_ORDER.indexOf(color);
+  const nextIndex = currentIndex === -1 ? 0 : (currentIndex + 1) % CHROME_GROUP_COLOR_ORDER.length;
+  return CHROME_GROUP_COLOR_ORDER[nextIndex];
+}
+
+function getPendingGroupStyle(group) {
+  return getChromeGroupStyle({ color: group.color || 'grey' });
+}
+
+function applyGroupColorToCard(card, color) {
+  if (!card) return;
+  const normalizedColor = CHROME_GROUP_COLOR_ORDER.includes(color) ? color : 'grey';
+  card.dataset.groupColor = normalizedColor;
+  card.setAttribute('style', getChromeGroupStyle({ color: normalizedColor }));
+}
+
+function buildChromeGroupCards(realTabs, groups = chromeTabGroups) {
+  const byGroupId = new Map(groups.map(group => [
     group.id,
     {
       ...group,
@@ -1001,8 +1168,110 @@ function buildChromeGroupCards(realTabs) {
     });
 }
 
+function buildDashboardState(tabs = openTabs, groups = chromeTabGroups) {
+  const realTabs = getRealTabs(tabs);
+  const chromeGroupCards = buildChromeGroupCards(realTabs, groups);
+  const chromeGroupedTabIds = new Set(
+    chromeGroupCards.flatMap(group => group.tabs.map(tab => tab.id))
+  );
+  const ungroupedRealTabs = realTabs.filter(tab => !chromeGroupedTabIds.has(tab.id));
+
+  return {
+    realTabs,
+    chromeGroupCards,
+    domainGroups: buildDomainGroupsFromTabs(ungroupedRealTabs),
+  };
+}
+
 function getDashboardGroupLabel(group) {
-  return group.kind === 'chrome-group' ? getChromeGroupLabel(group) : getGroupLabel(group);
+  if (group.kind === 'chrome-group') return getChromeGroupLabel(group);
+  if (group.kind === 'pending-group') return group.title || 'New group';
+  return getGroupLabel(group);
+}
+
+function normalizePendingGroup(raw, index = 0) {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = String(raw.id || '').trim();
+  if (!id) return null;
+  const title = String(raw.title || '').trim() || 'New group';
+  const color = TAB_GROUP_COLORS.includes(raw.color) ? raw.color : TAB_GROUP_COLORS[index % TAB_GROUP_COLORS.length];
+  return {
+    id,
+    title,
+    color,
+    kind: 'pending-group',
+    tabs: [],
+    createdAt: raw.createdAt || new Date().toISOString(),
+  };
+}
+
+async function loadPendingChromeGroups() {
+  const { [STORAGE_KEYS.pendingGroups]: stored = [] } = await chrome.storage.local.get(STORAGE_KEYS.pendingGroups);
+  pendingChromeGroups = Array.isArray(stored)
+    ? stored.map((group, index) => normalizePendingGroup(group, index)).filter(Boolean)
+    : [];
+  return pendingChromeGroups;
+}
+
+async function savePendingChromeGroups(groups) {
+  pendingChromeGroups = groups.map((group, index) => normalizePendingGroup(group, index)).filter(Boolean);
+  await chrome.storage.local.set({
+    [STORAGE_KEYS.pendingGroups]: pendingChromeGroups.map(({ id, title, color, createdAt }) => ({ id, title, color, createdAt })),
+  });
+}
+
+async function createPendingChromeGroup(title) {
+  const cleanTitle = String(title || '').trim() || 'New group';
+  const groups = await loadPendingChromeGroups();
+  const group = {
+    id: `local-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    title: cleanTitle,
+    color: TAB_GROUP_COLORS[groups.length % TAB_GROUP_COLORS.length],
+    createdAt: new Date().toISOString(),
+  };
+  await savePendingChromeGroups([group, ...groups]);
+  return normalizePendingGroup(group);
+}
+
+function getNextPendingGroupTitle(baseTitle = 'New group') {
+  const usedTitles = new Set([
+    ...pendingChromeGroups.map(group => (group.title || '').trim()),
+    ...chromeTabGroups.map(group => getChromeGroupLabel(group).trim()),
+  ].filter(Boolean));
+
+  if (!usedTitles.has(baseTitle)) return baseTitle;
+
+  let index = 2;
+  while (usedTitles.has(`${baseTitle} ${index}`)) index += 1;
+  return `${baseTitle} ${index}`;
+}
+
+async function renamePendingChromeGroup(groupId, title) {
+  const cleanTitle = String(title || '').trim();
+  if (!cleanTitle) return null;
+  const groups = await loadPendingChromeGroups();
+  const group = groups.find(item => item.id === groupId);
+  if (!group) return null;
+  group.title = cleanTitle;
+  await savePendingChromeGroups(groups);
+  return group;
+}
+
+async function updatePendingChromeGroupColor(groupId, color) {
+  const groups = await loadPendingChromeGroups();
+  const group = groups.find(item => item.id === groupId);
+  if (!group) return null;
+  group.color = CHROME_GROUP_COLOR_ORDER.includes(color) ? color : 'grey';
+  await savePendingChromeGroups(groups);
+  return group;
+}
+
+async function removePendingChromeGroup(groupId) {
+  const groups = await loadPendingChromeGroups();
+  const nextGroups = groups.filter(item => item.id !== groupId);
+  if (nextGroups.length === groups.length) return false;
+  await savePendingChromeGroups(nextGroups);
+  return true;
 }
 
 async function groupTabsIntoChromeGroups(group) {
@@ -1081,6 +1350,45 @@ async function moveTabToChromeGroup(payload, targetGroupId) {
   await chrome.tabGroups.update(targetGroupId, { collapsed: false });
   await fetchOpenTabs();
   return { moved: true, targetGroup };
+}
+
+async function moveTabToPendingChromeGroup(payload, pendingGroupId) {
+  const tabId = parseDatasetInt(payload?.tabId);
+  if (!Number.isInteger(tabId) || !pendingGroupId) {
+    return { moved: false, reason: 'missing-tab' };
+  }
+
+  const pendingGroups = await loadPendingChromeGroups();
+  const pendingGroup = pendingGroups.find(group => group.id === pendingGroupId);
+  if (!pendingGroup) return { moved: false, reason: 'missing-target' };
+
+  const groupId = await chrome.tabs.group({ tabIds: [tabId] });
+  const targetGroup = await chrome.tabGroups.update(groupId, {
+    title: pendingGroup.title,
+    color: pendingGroup.color || getTabGroupColor(pendingGroup),
+    collapsed: false,
+  });
+
+  await removePendingChromeGroup(pendingGroupId);
+  await fetchOpenTabs();
+  return { moved: true, targetGroup };
+}
+
+async function renameChromeGroup(groupId, title) {
+  const cleanTitle = String(title || '').trim();
+  if (!Number.isInteger(groupId) || !cleanTitle) return null;
+  const group = await chrome.tabGroups.update(groupId, { title: cleanTitle });
+  await fetchOpenTabs();
+  return group;
+}
+
+async function updateChromeGroupColor(groupId, color) {
+  if (!Number.isInteger(groupId)) return null;
+  const normalizedColor = CHROME_GROUP_COLOR_ORDER.includes(color) ? color : 'grey';
+  const group = await chrome.tabGroups.update(groupId, { color: normalizedColor });
+  const existing = chromeTabGroups.find(item => item.id === groupId);
+  if (existing) existing.color = group.color;
+  return group;
 }
 
 async function ungroupChromeGroupTabs(groupId) {
@@ -1174,10 +1482,18 @@ function getDisplayedDashboardGroups(groups) {
 
     const aIsChrome = a.kind === 'chrome-group';
     const bIsChrome = b.kind === 'chrome-group';
+    const aIsPending = a.kind === 'pending-group';
+    const bIsPending = b.kind === 'pending-group';
+    const aIsManagedGroup = aIsChrome || aIsPending;
+    const bIsManagedGroup = bIsChrome || bIsPending;
+    if (aIsManagedGroup !== bIsManagedGroup) return aIsManagedGroup ? -1 : 1;
     if (aIsChrome !== bIsChrome) return aIsChrome ? -1 : 1;
     if (aIsChrome && bIsChrome) {
       if (a.windowId !== b.windowId) return a.windowId - b.windowId;
       return a.firstTabIndex - b.firstTabIndex;
+    }
+    if (aIsPending && bIsPending) {
+      return new Date(a.createdAt || 0) - new Date(b.createdAt || 0);
     }
 
     const aIsLanding = a.domain === '__landing-pages__';
@@ -1204,8 +1520,8 @@ function getDisplayedDashboardGroups(groups) {
  * Returns tabs that are real web pages — no chrome://, extension
  * pages, about:blank, etc.
  */
-function getRealTabs() {
-  return openTabs.filter(t => {
+function getRealTabs(tabs = openTabs) {
+  return tabs.filter(t => {
     const url = t.url || '';
     return (
       !url.startsWith('chrome://') &&
@@ -1237,6 +1553,34 @@ function checkTabOutDupes() {
   }
 }
 
+const FAVICON_SOURCE_SIZE = 64;
+
+function getFallbackFaviconUrl(pageUrl, size = FAVICON_SOURCE_SIZE) {
+  if (!pageUrl) return '';
+  return `https://www.google.com/s2/favicons?domain_url=${encodeURIComponent(pageUrl)}&sz=${size}`;
+}
+
+function getTabFaviconUrls(tab) {
+  return {
+    primary: tab.favIconUrl || tab.faviconUrl || '',
+    fallback: getFallbackFaviconUrl(tab.url),
+  };
+}
+
+function getSavedFaviconUrls(item) {
+  return {
+    primary: item.faviconUrl || '',
+    fallback: getFallbackFaviconUrl(item.url),
+  };
+}
+
+function renderFaviconImg(src, fallbackSrc, className) {
+  const safeSrc = escapeHtml(src || fallbackSrc || '');
+  const safeFallbackSrc = escapeHtml(src ? fallbackSrc : '');
+  if (!safeSrc) return '';
+
+  return `<img class="${className}" src="${safeSrc}" data-fallback-favicon-url="${safeFallbackSrc}" alt="" onerror="if(this.dataset.fallbackFaviconUrl){this.src=this.dataset.fallbackFaviconUrl;this.dataset.fallbackFaviconUrl='';}else{this.style.display='none';}">`;
+}
 
 /* ----------------------------------------------------------------
    OVERFLOW CHIPS ("+N more" expand button in domain cards)
@@ -1260,12 +1604,10 @@ function renderTabChip(tab, urlCounts = {}, groupDomain = '') {
   const safeTabId = Number.isInteger(tab.id) ? String(tab.id) : '';
   const safeWindowId = Number.isInteger(tab.windowId) ? String(tab.windowId) : '';
   const safeGroupId = Number.isInteger(tab.groupId) ? String(tab.groupId) : '';
-  let domain = '';
-  try { domain = new URL(tab.url).hostname; } catch {}
-  const faviconUrl = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=16` : '';
+  const faviconUrls = getTabFaviconUrls(tab);
 
-  return `<div class="page-chip clickable${chipClass}" draggable="true" data-transfer-kind="${INTERACTION_KINDS.tabLink}" data-action="focus-tab" data-tab-id="${safeTabId}" data-window-id="${safeWindowId}" data-group-id="${safeGroupId}" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" title="${safeTitle}">
-    ${faviconUrl ? `<img class="chip-favicon" src="${faviconUrl}" alt="" onerror="this.style.display='none'">` : ''}
+  return `<div class="page-chip clickable${chipClass}" draggable="true" data-transfer-kind="${INTERACTION_KINDS.tabLink}" data-action="focus-tab" data-tab-id="${safeTabId}" data-window-id="${safeWindowId}" data-group-id="${safeGroupId}" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" data-tab-favicon-url="${escapeHtml(faviconUrls.primary)}" title="${safeTitle}">
+    ${renderFaviconImg(faviconUrls.primary, faviconUrls.fallback, 'chip-favicon')}
     <span class="chip-text">${safeTitle}</span>${dupeTag}
     <div class="chip-actions">
       <button class="chip-action chip-save" data-action="defer-single-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" title="Save for later">
@@ -1287,7 +1629,6 @@ function buildOverflowChips(hiddenTabs, urlCounts = {}, groupDomain = '') {
       <span class="chip-text">+${hiddenTabs.length} more</span>
     </div>`;
 }
-
 
 /* ----------------------------------------------------------------
    DOMAIN CARD RENDERER
@@ -1351,7 +1692,7 @@ function renderDomainCard(group) {
   }
 
   return `
-    <div class="mission-card domain-card ${hasDupes ? 'has-amber-bar' : 'has-neutral-bar'}" data-domain-id="${stableId}">
+    <div class="mission-card domain-card ${hasDupes ? 'has-amber-bar' : 'has-neutral-bar'}" data-domain-id="${stableId}" data-tab-count="${tabCount}">
       <div class="status-bar"></div>
       <div class="mission-content">
         <div class="mission-top">
@@ -1382,7 +1723,7 @@ function renderChromeGroupCard(group) {
     ${tabCount} tab${tabCount !== 1 ? 's' : ''} open
   </span>`;
 
-  const groupSwatch = '<span class="chrome-group-swatch" aria-hidden="true"></span>';
+  const groupSwatch = `<button class="chrome-group-swatch" type="button" data-action="cycle-chrome-group-color" data-chrome-group-id="${group.id}" title="Change group color" aria-label="Change color for ${groupTitle}"></button>`;
 
   const collapsedBadge = group.collapsed
     ? `<span class="open-tabs-badge chrome-group-state">collapsed</span>`
@@ -1424,11 +1765,11 @@ function renderChromeGroupCard(group) {
   }
 
   return `
-    <div class="mission-card chrome-group-card ${hasDupes ? 'has-amber-bar' : ''}" data-domain-id="${stableId}" data-chrome-group-id="${group.id}" data-drop-target="${dropTargetId}" style="${getChromeGroupStyle(group)}" title="Move a tab into ${groupTitle}">
+    <div class="mission-card chrome-group-card ${hasDupes ? 'has-amber-bar' : ''}" data-domain-id="${stableId}" data-chrome-group-id="${group.id}" data-drop-target="${dropTargetId}" data-tab-count="${tabCount}" data-group-color="${escapeHtml(group.color || 'grey')}" style="${getChromeGroupStyle(group)}" title="Move a tab into ${groupTitle}">
       <div class="status-bar"></div>
       <div class="mission-content">
         <div class="mission-top">
-          <span class="mission-name">${groupTitle}</span>
+          <span class="mission-name" data-group-title>${groupTitle}</span>
           ${groupSwatch}
           ${tabBadge}
           ${collapsedBadge}
@@ -1444,7 +1785,271 @@ function renderChromeGroupCard(group) {
     </div>`;
 }
 
+function renderPendingGroupCard(group) {
+  const groupTitle = escapeHtml(group.title || 'New group');
+  const dropTargetId = getPendingGroupDropTargetId(group.id);
+  const emptyBadge = '<span class="open-tabs-badge chrome-group-state">empty</span>';
+
+  return `
+    <div class="mission-card chrome-group-card pending-group-card" data-pending-group-id="${escapeHtml(group.id)}" data-drop-target="${dropTargetId}" data-tab-count="0" data-group-color="${escapeHtml(group.color || 'grey')}" style="${getPendingGroupStyle(group)}" title="Drop a tab into ${groupTitle}">
+      <div class="status-bar"></div>
+      <div class="mission-content">
+        <div class="mission-top">
+          <span class="mission-name" data-group-title>${groupTitle}</span>
+          <button class="chrome-group-swatch" type="button" data-action="cycle-pending-group-color" data-pending-group-id="${escapeHtml(group.id)}" title="Change group color" aria-label="Change color for ${groupTitle}"></button>
+          ${emptyBadge}
+        </div>
+        <div class="pending-group-hint">Drop a tab here</div>
+        <div class="actions">
+          <button class="action-btn danger" data-action="remove-pending-group" data-pending-group-id="${escapeHtml(group.id)}">
+            ${ICONS.trash}
+            Remove
+          </button>
+        </div>
+      </div>
+      <div class="mission-meta">
+        <div class="mission-page-count">0</div>
+        <div class="mission-page-label">tabs</div>
+      </div>
+    </div>`;
+}
+
+function getPayloadTabForRender(payload, groupId = CHROME_TAB_GROUP_NONE, windowId = null) {
+  return {
+    id: parseDatasetInt(payload?.tabId),
+    windowId: Number.isInteger(windowId) ? windowId : parseDatasetInt(payload?.windowId),
+    groupId,
+    url: payload?.url || '',
+    title: payload?.title || payload?.url || '',
+    faviconUrl: payload?.faviconUrl || '',
+  };
+}
+
+function updateCardTabCount(card, nextCount) {
+  if (!card) return;
+  const count = Math.max(0, nextCount);
+  card.dataset.tabCount = String(count);
+
+  const tabBadge = Array.from(card.querySelectorAll('.open-tabs-badge'))
+    .find(badge => /\btab(s)? open\b/.test(badge.textContent || ''));
+  if (tabBadge) {
+    tabBadge.innerHTML = `${ICONS.tabs} ${count} tab${count !== 1 ? 's' : ''} open`;
+  }
+
+  const closeButton = card.querySelector('[data-action="close-domain-tabs"], [data-action="close-chrome-group-tabs"]');
+  if (closeButton) {
+    closeButton.innerHTML = `${ICONS.close} Close all ${count} tab${count !== 1 ? 's' : ''}`;
+  }
+
+  const metaCount = card.querySelector('.mission-page-count');
+  if (metaCount) metaCount.textContent = String(count);
+}
+
+function adjustCardTabCount(card, delta) {
+  if (!card) return 0;
+  const current = parseDatasetInt(card.dataset.tabCount) ?? card.querySelectorAll('.page-chip[data-action="focus-tab"]').length;
+  const next = Math.max(0, current + delta);
+  updateCardTabCount(card, next);
+  return next;
+}
+
+function removeTabFromDomainGroups(payload) {
+  const tabId = parseDatasetInt(payload?.tabId);
+  const tabUrl = payload?.url || '';
+
+  domainGroups = domainGroups
+    .map(group => ({
+      ...group,
+      tabs: (group.tabs || []).filter(tab => {
+        if (Number.isInteger(tabId)) return tab.id !== tabId;
+        return !tabUrl || tab.url !== tabUrl;
+      }),
+    }))
+    .filter(group => group.tabs.length > 0);
+}
+
+function refreshSectionCountText() {
+  const countText = document.querySelector('#openTabsSectionCount .section-count-text');
+  if (!countText) return;
+
+  const managedCount = document.querySelectorAll('#openTabsMissions .mission-card.chrome-group-card').length;
+  const domainCount = document.querySelectorAll('#openTabsMissions .mission-card.domain-card').length;
+  const parts = [];
+  if (managedCount > 0) parts.push(`${managedCount} group${managedCount !== 1 ? 's' : ''}`);
+  if (domainCount > 0) parts.push(`${domainCount} domain${domainCount !== 1 ? 's' : ''}`);
+  countText.textContent = parts.join(' / ') || '0 groups';
+}
+
+function insertPendingGroupCard(group) {
+  const missionsEl = document.getElementById('openTabsMissions');
+  if (!missionsEl) return;
+
+  const emptyState = missionsEl.querySelector('.missions-empty-state');
+  if (emptyState) missionsEl.innerHTML = '';
+
+  missionsEl.insertAdjacentHTML('beforeend', renderPendingGroupCard(group));
+  refreshSectionCountText();
+}
+
+function updateGroupCardTitle(card, title) {
+  if (!card) return;
+  const cleanTitle = title || 'New group';
+  const titleEl = card.querySelector('[data-group-title]');
+  if (titleEl) titleEl.textContent = cleanTitle;
+
+  if (card.dataset.chromeGroupId) {
+    card.setAttribute('title', `Move a tab into ${cleanTitle}`);
+  } else if (card.dataset.pendingGroupId) {
+    card.setAttribute('title', `Drop a tab into ${cleanTitle}`);
+  }
+}
+
+function beginInlineGroupRename(titleEl) {
+  if (!titleEl || titleEl.querySelector('input')) return;
+  const card = titleEl.closest('.mission-card');
+  if (!card || (!card.dataset.chromeGroupId && !card.dataset.pendingGroupId)) return;
+
+  const currentTitle = titleEl.textContent.trim() || 'New group';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'group-title-input';
+  input.value = currentTitle;
+  input.dataset.originalTitle = currentTitle;
+  fitGroupTitleInput(input);
+
+  titleEl.textContent = '';
+  titleEl.classList.add('is-editing-title');
+  titleEl.append(input);
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+function fitGroupTitleInput(input) {
+  if (!input) return;
+  const length = Math.max(6, Math.min((input.value || '').length + 1, 24));
+  input.style.width = `${length}ch`;
+}
+
+async function commitInlineGroupRename(input, shouldSave = true) {
+  if (!input || input.dataset.committing === 'true') return;
+  input.dataset.committing = 'true';
+
+  const titleEl = input.closest('[data-group-title]');
+  const card = input.closest('.mission-card');
+  const originalTitle = input.dataset.originalTitle || 'New group';
+  const nextTitle = input.value.trim();
+
+  titleEl?.classList.remove('is-editing-title');
+
+  if (!shouldSave || !nextTitle || nextTitle === originalTitle) {
+    if (titleEl) titleEl.textContent = originalTitle;
+    return;
+  }
+
+  try {
+    if (card?.dataset.chromeGroupId) {
+      const groupId = parseDatasetInt(card.dataset.chromeGroupId);
+      const updatedGroup = await renameChromeGroup(groupId, nextTitle);
+      updateGroupCardTitle(card, getChromeGroupLabel(updatedGroup));
+    } else if (card?.dataset.pendingGroupId) {
+      await renamePendingChromeGroup(card.dataset.pendingGroupId, nextTitle);
+      updateGroupCardTitle(card, nextTitle);
+    }
+    showToast('Group renamed');
+  } catch (err) {
+    console.error('[tab-out] Failed to rename group inline:', err);
+    if (titleEl) titleEl.textContent = originalTitle;
+    showToast('Could not rename group');
+  }
+}
+
+function removePendingGroupCard(groupId) {
+  const card = document.querySelector(`.mission-card[data-pending-group-id="${CSS.escape(groupId)}"]`);
+  if (!card) return;
+  animateCardOut(card);
+  setTimeout(refreshSectionCountText, 320);
+}
+
+function removeSourceChipAfterMove(sourceChip, targetCard) {
+  if (!sourceChip) return;
+  const sourceCard = sourceChip.closest('.mission-card');
+  const sameCard = sourceCard && targetCard && sourceCard === targetCard;
+  if (sameCard) return;
+
+  sourceChip.remove();
+  if (!sourceCard || sourceCard.classList.contains('pending-group-card')) return;
+
+  const nextCount = adjustCardTabCount(sourceCard, -1);
+  if (nextCount === 0) {
+    animateCardOut(sourceCard);
+  }
+}
+
+function getChipForPayload(payload) {
+  const activeChip = activeDragSource?.closest('.page-chip');
+  if (activeChip) return activeChip;
+
+  const tabId = parseDatasetInt(payload?.tabId);
+  if (Number.isInteger(tabId)) {
+    const byId = document.querySelector(`.page-chip[data-tab-id="${tabId}"]`);
+    if (byId) return byId;
+  }
+
+  const tabUrl = payload?.url || '';
+  if (tabUrl) {
+    return document.querySelector(`.page-chip[data-tab-url="${CSS.escape(tabUrl)}"]`);
+  }
+
+  return null;
+}
+
+function reflectRemovedTabInDashboard(payload) {
+  const sourceChip = getChipForPayload(payload);
+  const wasDomainCard = !!sourceChip?.closest('.domain-card');
+  removeSourceChipAfterMove(sourceChip, null);
+  if (wasDomainCard) removeTabFromDomainGroups(payload);
+  refreshSectionCountText();
+}
+
+function appendMovedChipToGroupCard(card, payload, group) {
+  if (!card) return;
+  const pages = card.querySelector('.mission-pages');
+  if (!pages) return;
+
+  const tab = getPayloadTabForRender(payload, group.id, group.windowId);
+  pages.insertAdjacentHTML('beforeend', renderTabChip(tab, {}, ''));
+  adjustCardTabCount(card, 1);
+}
+
+function reflectMovedTabInDashboard(payload, targetGroup, pendingGroupId = null) {
+  const sourceChip = getChipForPayload(payload);
+  let targetCard = document.querySelector(`.mission-card[data-chrome-group-id="${targetGroup.id}"]`);
+
+  if (pendingGroupId) {
+    const pendingCard = document.querySelector(`.mission-card[data-pending-group-id="${CSS.escape(pendingGroupId)}"]`);
+    const tab = getPayloadTabForRender(payload, targetGroup.id, targetGroup.windowId);
+    const cardHtml = renderChromeGroupCard({
+      ...targetGroup,
+      kind: 'chrome-group',
+      tabs: [tab],
+      firstTabIndex: Number.POSITIVE_INFINITY,
+    });
+    if (pendingCard) {
+      pendingCard.insertAdjacentHTML('afterend', cardHtml);
+      targetCard = pendingCard.nextElementSibling;
+      pendingCard.remove();
+    }
+  } else if (targetCard && sourceChip?.closest('.mission-card') !== targetCard) {
+    appendMovedChipToGroupCard(targetCard, payload, targetGroup);
+  }
+
+  removeSourceChipAfterMove(sourceChip, targetCard);
+  if (sourceChip?.closest('.domain-card')) removeTabFromDomainGroups(payload);
+  refreshSectionCountText();
+}
+
 function renderDashboardGroupCard(group) {
+  if (group.kind === 'pending-group') return renderPendingGroupCard(group);
   return group.kind === 'chrome-group' ? renderChromeGroupCard(group) : renderDomainCard(group);
 }
 
@@ -1523,14 +2128,11 @@ async function renderDeferredSection() {
   const list = document.getElementById('deferredList');
   const empty = document.getElementById('deferredEmpty');
   const countEl = document.getElementById('deferredCount');
-  const archiveEl      = document.getElementById('deferredArchive');
-  const archiveCountEl = document.getElementById('archiveCount');
-  const archiveList    = document.getElementById('archiveList');
 
-  if (!list || !empty || !countEl || !archiveEl || !archiveCountEl || !archiveList) return;
+  if (!list || !empty || !countEl) return;
 
   try {
-    const { active, archived } = await getSavedTabs();
+    const { active } = await getSavedTabs();
 
     if (active.length > 0) {
       countEl.textContent = `${active.length} item${active.length !== 1 ? 's' : ''}`;
@@ -1543,29 +2145,19 @@ async function renderDeferredSection() {
       empty.style.display = 'block';
     }
 
-    // Render archive section
-    if (archived.length > 0) {
-      archiveCountEl.textContent = `(${archived.length})`;
-      archiveList.innerHTML = archived.map(item => renderArchiveItem(item)).join('');
-      archiveEl.style.display = 'block';
-    } else {
-      archiveEl.style.display = 'none';
-    }
-
   } catch (err) {
     console.warn('[tab-out] Could not load saved tabs:', err);
     list.innerHTML = '';
     list.style.display = 'none';
     empty.style.display = 'block';
     countEl.textContent = '';
-    archiveEl.style.display = 'none';
   }
 }
 
 function renderFavoriteItem(item) {
   let domain = '';
   try { domain = new URL(item.url).hostname.replace(/^www\./, ''); } catch {}
-  const faviconUrl = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=16` : '';
+  const faviconUrls = getSavedFaviconUrls(item);
   const title = escapeHtml(item.title || item.url);
   const safeUrl = escapeHtml(item.url || '');
   const ago = timeAgo(item.updatedAt || item.createdAt);
@@ -1573,7 +2165,7 @@ function renderFavoriteItem(item) {
   return `
     <div class="favorite-item" data-favorite-id="${item.id}">
       <button class="favorite-link" type="button" data-action="open-favorite-link" data-favorite-url="${safeUrl}" title="${title}">
-        ${faviconUrl ? `<img src="${faviconUrl}" alt="" class="favorite-favicon" onerror="this.style.display='none'">` : ''}
+        ${renderFaviconImg(faviconUrls.primary, faviconUrls.fallback, 'favorite-favicon')}
         <span class="favorite-link-text">${title}</span>
       </button>
       <div class="favorite-meta">
@@ -1595,7 +2187,7 @@ function renderFavoriteItem(item) {
 function renderDeferredItem(item) {
   let domain = '';
   try { domain = new URL(item.url).hostname.replace(/^www\./, ''); } catch {}
-  const faviconUrl = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=16` : '';
+  const faviconUrls = getSavedFaviconUrls(item);
   const ago = timeAgo(item.savedAt);
   const title = escapeHtml(item.title || item.url);
   const safeUrl = escapeHtml(item.url || '');
@@ -1605,7 +2197,7 @@ function renderDeferredItem(item) {
       <input type="checkbox" class="deferred-checkbox" data-action="check-deferred" data-deferred-id="${item.id}">
       <div class="deferred-info">
         <a href="${safeUrl}" target="_blank" rel="noopener" class="deferred-title" title="${title}">
-          ${faviconUrl ? `<img src="${faviconUrl}" alt="" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px" onerror="this.style.display='none'">` : ''}${title}
+          ${renderFaviconImg(faviconUrls.primary, faviconUrls.fallback, 'deferred-favicon')}${title}
         </a>
         <div class="deferred-meta">
           <span>${escapeHtml(domain)}</span>
@@ -1617,25 +2209,6 @@ function renderDeferredItem(item) {
       </button>
     </div>`;
 }
-
-/**
- * renderArchiveItem(item)
- *
- * Builds HTML for one completed/archived item (simpler: just title + date).
- */
-function renderArchiveItem(item) {
-  const ago = item.completedAt ? timeAgo(item.completedAt) : timeAgo(item.savedAt);
-  const title = escapeHtml(item.title || item.url);
-  const safeUrl = escapeHtml(item.url || '');
-  return `
-    <div class="archive-item">
-      <a href="${safeUrl}" target="_blank" rel="noopener" class="archive-item-title" title="${title}">
-        ${title}
-      </a>
-      <span class="archive-item-date">${escapeHtml(ago)}</span>
-    </div>`;
-}
-
 
 /* ----------------------------------------------------------------
    MAIN DASHBOARD RENDERER
@@ -1661,124 +2234,9 @@ async function renderStaticDashboard() {
 
   // --- Fetch tabs ---
   await fetchOpenTabs();
-  const realTabs = getRealTabs();
-  const chromeGroupCards = buildChromeGroupCards(realTabs);
-  const chromeGroupedTabIds = new Set(
-    chromeGroupCards.flatMap(group => group.tabs.map(tab => tab.id))
-  );
-  const ungroupedRealTabs = realTabs.filter(tab => !chromeGroupedTabIds.has(tab.id));
-
-  // --- Group tabs by domain ---
-  // Landing pages (Gmail inbox, Twitter home, etc.) get their own special group
-  // so they can be closed together without affecting content tabs on the same domain.
-  const LANDING_PAGE_PATTERNS = [
-    { hostname: 'mail.google.com', test: (p, h) =>
-        !h.includes('#inbox/') && !h.includes('#sent/') && !h.includes('#search/') },
-    { hostname: 'x.com',               pathExact: ['/home'] },
-    { hostname: 'www.linkedin.com',    pathExact: ['/'] },
-    { hostname: 'github.com',          pathExact: ['/'] },
-    { hostname: 'www.youtube.com',     pathExact: ['/'] },
-    // Merge personal patterns from config.local.js (if it exists)
-    ...(typeof LOCAL_LANDING_PAGE_PATTERNS !== 'undefined' ? LOCAL_LANDING_PAGE_PATTERNS : []),
-  ];
-
-  function isLandingPage(url) {
-    try {
-      const parsed = new URL(url);
-      return LANDING_PAGE_PATTERNS.some(p => {
-        // Support both exact hostname and suffix matching (for wildcard subdomains)
-        const hostnameMatch = p.hostname
-          ? parsed.hostname === p.hostname
-          : p.hostnameEndsWith
-            ? parsed.hostname.endsWith(p.hostnameEndsWith)
-            : false;
-        if (!hostnameMatch) return false;
-        if (p.test)       return p.test(parsed.pathname, url);
-        if (p.pathPrefix) return parsed.pathname.startsWith(p.pathPrefix);
-        if (p.pathExact)  return p.pathExact.includes(parsed.pathname);
-        return parsed.pathname === '/';
-      });
-    } catch { return false; }
-  }
-
-  domainGroups = [];
-  const groupMap    = {};
-  const landingTabs = [];
-
-  // Custom group rules from config.local.js (if any)
-  const customGroups = typeof LOCAL_CUSTOM_GROUPS !== 'undefined' ? LOCAL_CUSTOM_GROUPS : [];
-
-  // Check if a URL matches a custom group rule; returns the rule or null
-  function matchCustomGroup(url) {
-    try {
-      const parsed = new URL(url);
-      return customGroups.find(r => {
-        const hostMatch = r.hostname
-          ? parsed.hostname === r.hostname
-          : r.hostnameEndsWith
-            ? parsed.hostname.endsWith(r.hostnameEndsWith)
-            : false;
-        if (!hostMatch) return false;
-        if (r.pathPrefix) return parsed.pathname.startsWith(r.pathPrefix);
-        return true; // hostname matched, no path filter
-      }) || null;
-    } catch { return null; }
-  }
-
-  for (const tab of ungroupedRealTabs) {
-    try {
-      if (isLandingPage(tab.url)) {
-        landingTabs.push(tab);
-        continue;
-      }
-
-      // Check custom group rules first (e.g. merge subdomains, split by path)
-      const customRule = matchCustomGroup(tab.url);
-      if (customRule) {
-        const key = customRule.groupKey;
-        if (!groupMap[key]) groupMap[key] = { domain: key, label: customRule.groupLabel, tabs: [] };
-        groupMap[key].tabs.push(tab);
-        continue;
-      }
-
-      let hostname;
-      if (tab.url && tab.url.startsWith('file://')) {
-        hostname = 'local-files';
-      } else {
-        hostname = new URL(tab.url).hostname;
-      }
-      if (!hostname) continue;
-
-      if (!groupMap[hostname]) groupMap[hostname] = { domain: hostname, tabs: [] };
-      groupMap[hostname].tabs.push(tab);
-    } catch {
-      // Skip malformed URLs
-    }
-  }
-
-  if (landingTabs.length > 0) {
-    groupMap['__landing-pages__'] = { domain: '__landing-pages__', tabs: landingTabs };
-  }
-
-  // Sort: landing pages first, then domains from landing page sites, then by tab count
-  // Collect exact hostnames and suffix patterns for priority sorting
-  const landingHostnames = new Set(LANDING_PAGE_PATTERNS.map(p => p.hostname).filter(Boolean));
-  const landingSuffixes = LANDING_PAGE_PATTERNS.map(p => p.hostnameEndsWith).filter(Boolean);
-  function isLandingDomain(domain) {
-    if (landingHostnames.has(domain)) return true;
-    return landingSuffixes.some(s => domain.endsWith(s));
-  }
-  domainGroups = Object.values(groupMap).sort((a, b) => {
-    const aIsLanding = a.domain === '__landing-pages__';
-    const bIsLanding = b.domain === '__landing-pages__';
-    if (aIsLanding !== bIsLanding) return aIsLanding ? -1 : 1;
-
-    const aIsPriority = isLandingDomain(a.domain);
-    const bIsPriority = isLandingDomain(b.domain);
-    if (aIsPriority !== bIsPriority) return aIsPriority ? -1 : 1;
-
-    return b.tabs.length - a.tabs.length;
-  });
+  await loadPendingChromeGroups();
+  const { realTabs, chromeGroupCards, domainGroups: nextDomainGroups } = buildDashboardState(openTabs, chromeTabGroups);
+  domainGroups = nextDomainGroups;
 
   // --- Render domain cards ---
   const openTabsSection      = document.getElementById('openTabsSection');
@@ -1786,7 +2244,7 @@ async function renderStaticDashboard() {
   const openTabsSectionCount = document.getElementById('openTabsSectionCount');
   const openTabsSectionTitle = document.getElementById('openTabsSectionTitle');
   const displayedDomainGroups = getDisplayedDomainGroups(domainGroups);
-  const displayedGroups      = getDisplayedDashboardGroups([...chromeGroupCards, ...domainGroups]);
+  const displayedGroups      = getDisplayedDashboardGroups([...chromeGroupCards, ...pendingChromeGroups, ...domainGroups]);
   const sectionTitles = {
     all: 'Groups & tabs',
     duplicates: 'Duplicate cleanup',
@@ -1796,21 +2254,27 @@ async function renderStaticDashboard() {
   if (displayedGroups.length > 0 && openTabsSection) {
     if (openTabsSectionTitle) openTabsSectionTitle.textContent = sectionTitles[dockPreferences.filter] || 'Open tabs';
     const countParts = [];
-    const visibleChromeGroups = displayedGroups.filter(group => group.kind === 'chrome-group').length;
-    const visibleDomainGroups = displayedGroups.length - visibleChromeGroups;
-    if (visibleChromeGroups > 0) countParts.push(`${visibleChromeGroups} group${visibleChromeGroups !== 1 ? 's' : ''}`);
+    const visibleManagedGroups = displayedGroups.filter(group => group.kind === 'chrome-group' || group.kind === 'pending-group').length;
+    const visibleDomainGroups = displayedGroups.length - visibleManagedGroups;
+    if (visibleManagedGroups > 0) countParts.push(`${visibleManagedGroups} group${visibleManagedGroups !== 1 ? 's' : ''}`);
     if (visibleDomainGroups > 0) countParts.push(`${visibleDomainGroups} domain${visibleDomainGroups !== 1 ? 's' : ''}`);
+    const createGroupButton = dockPreferences.filter === 'all'
+      ? `<button class="action-btn group-tabs create-group-btn" data-action="create-pending-group" style="font-size:11px;padding:3px 10px;">${ICONS.plus} Group</button>`
+      : '';
     const groupAllButton = displayedDomainGroups.length > 0
       ? `<button class="action-btn group-tabs" data-action="group-all-domain-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.group} Group ungrouped ${displayedDomainGroups.length}</button>`
       : '';
-    openTabsSectionCount.innerHTML = `<span class="section-count-text">${countParts.join(' / ') || '0 groups'}</span><span class="meta-separator section-separator" aria-hidden="true"></span>${groupAllButton}<button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
+    openTabsSectionCount.innerHTML = `<span class="section-count-text">${countParts.join(' / ') || '0 groups'}</span><span class="meta-separator section-separator" aria-hidden="true"></span>${createGroupButton}${groupAllButton}<button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
     openTabsMissionsEl.innerHTML = displayedGroups.map(g => renderDashboardGroupCard(g)).join('');
     openTabsSection.style.display = 'block';
   } else if (openTabsSection) {
     openTabsSection.style.display = 'block';
     if (openTabsSectionTitle) openTabsSectionTitle.textContent = sectionTitles[dockPreferences.filter] || 'Open tabs';
     openTabsMissionsEl.innerHTML = '<div style="font-size:13px;color:var(--muted);padding:12px 0">Nothing matches this dock filter right now.</div>';
-    openTabsSectionCount.innerHTML = `<span class="section-count-text">0 groups</span><span class="meta-separator section-separator" aria-hidden="true"></span><button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
+    const createGroupButton = dockPreferences.filter === 'all'
+      ? `<button class="action-btn group-tabs create-group-btn" data-action="create-pending-group" style="font-size:11px;padding:3px 10px;">${ICONS.plus} Group</button>`
+      : '';
+    openTabsSectionCount.innerHTML = `<span class="section-count-text">0 groups</span><span class="meta-separator section-separator" aria-hidden="true"></span>${createGroupButton}<button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
   }
 
   // --- Footer stats ---
@@ -1826,6 +2290,227 @@ async function renderStaticDashboard() {
 
 async function renderDashboard() {
   await renderStaticDashboard();
+}
+
+function getLiveDashboardGroups(state) {
+  return [...state.chromeGroupCards, ...state.domainGroups];
+}
+
+function getDashboardGroupKey(group) {
+  if (group.kind === 'chrome-group') return `chrome:${group.id}`;
+  if (group.kind === 'pending-group') return `pending:${group.id}`;
+  return `domain:${getStableDomainId(group.domain)}`;
+}
+
+function getDashboardGroupCardByKey(key) {
+  const [kind, id] = String(key || '').split(':');
+  if (!kind || !id) return null;
+
+  if (kind === 'chrome') {
+    return document.querySelector(`.mission-card[data-chrome-group-id="${CSS.escape(id)}"]`);
+  }
+
+  if (kind === 'pending') {
+    return document.querySelector(`.mission-card[data-pending-group-id="${CSS.escape(id)}"]`);
+  }
+
+  return document.querySelector(`.mission-card.domain-card[data-domain-id="${CSS.escape(id)}"]`);
+}
+
+function getDashboardGroupSignature(group) {
+  return JSON.stringify({
+    kind: group.kind || 'domain',
+    id: group.id ?? group.domain,
+    label: getDashboardGroupLabel(group),
+    color: group.color || '',
+    collapsed: !!group.collapsed,
+    tabs: (group.tabs || []).map(tab => [
+      tab.id,
+      tab.url,
+      tab.title,
+      tab.favIconUrl || tab.faviconUrl || '',
+      tab.windowId,
+      tab.index,
+      tab.groupId,
+    ]),
+  });
+}
+
+function indexDashboardGroups(groups) {
+  return new Map(groups.map(group => [getDashboardGroupKey(group), group]));
+}
+
+function shouldDisplayDashboardGroup(group) {
+  return getDisplayedDashboardGroups([group]).length > 0;
+}
+
+function appendDashboardGroupCard(html) {
+  const missionsEl = document.getElementById('openTabsMissions');
+  if (!missionsEl) return false;
+
+  if (!missionsEl.querySelector('.mission-card')) {
+    missionsEl.innerHTML = '';
+  }
+
+  missionsEl.insertAdjacentHTML('beforeend', html);
+  return true;
+}
+
+function patchDashboardGroupCard(group) {
+  const key = getDashboardGroupKey(group);
+  const card = getDashboardGroupCardByKey(key);
+
+  if (!shouldDisplayDashboardGroup(group)) {
+    if (card) card.remove();
+    return true;
+  }
+
+  const html = renderDashboardGroupCard(group);
+  if (card) {
+    card.outerHTML = html;
+    return true;
+  }
+
+  return appendDashboardGroupCard(html);
+}
+
+function removeDashboardGroupCard(key) {
+  const card = getDashboardGroupCardByKey(key);
+  if (card) card.remove();
+}
+
+function refreshLiveDashboardStats(state) {
+  const statTabsHeader = document.getElementById('statTabsHeader');
+  if (statTabsHeader) statTabsHeader.textContent = openTabs.length;
+
+  const closeAllButton = document.querySelector('[data-action="close-all-open-tabs"]');
+  if (closeAllButton) {
+    closeAllButton.innerHTML = `${ICONS.close} Close all ${state.realTabs.length} tab${state.realTabs.length !== 1 ? 's' : ''}`;
+  }
+
+  const groupAllButton = document.querySelector('[data-action="group-all-domain-tabs"]');
+  if (groupAllButton) {
+    const displayedDomainGroups = getDisplayedDomainGroups(domainGroups);
+    groupAllButton.innerHTML = `${ICONS.group} Group ungrouped ${displayedDomainGroups.length}`;
+    groupAllButton.style.display = displayedDomainGroups.length > 0 ? '' : 'none';
+  }
+
+  refreshSectionCountText();
+  checkTabOutDupes();
+}
+
+function ensureLiveDashboardFallback(state) {
+  const missionsEl = document.getElementById('openTabsMissions');
+  if (!missionsEl || missionsEl.querySelector('.mission-card')) return;
+
+  if (state.realTabs.length === 0 && dockPreferences.filter === 'all') {
+    missionsEl.innerHTML = `
+      <div class="missions-empty-state">
+        <div class="empty-checkmark">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+          </svg>
+        </div>
+        <div class="empty-title">Inbox zero, but for tabs.</div>
+        <div class="empty-subtitle">You're free.</div>
+      </div>
+    `;
+    return;
+  }
+
+  missionsEl.innerHTML = '<div style="font-size:13px;color:var(--muted);padding:12px 0">Nothing matches this dock filter right now.</div>';
+}
+
+async function syncDashboardFromChromeSnapshot() {
+  const previousTabs = openTabs;
+  const previousGroups = chromeTabGroups;
+  const previousState = buildDashboardState(previousTabs, previousGroups);
+  const previousGroupMap = indexDashboardGroups(getLiveDashboardGroups(previousState));
+
+  const snapshot = await readChromeSnapshot();
+  const nextState = buildDashboardState(snapshot.tabs, snapshot.groups);
+  const nextGroupMap = indexDashboardGroups(getLiveDashboardGroups(nextState));
+
+  openTabs = snapshot.tabs;
+  chromeTabGroups = snapshot.groups;
+  domainGroups = nextState.domainGroups;
+
+  const changedKeys = new Set([...previousGroupMap.keys(), ...nextGroupMap.keys()]);
+
+  for (const key of changedKeys) {
+    const previousGroup = previousGroupMap.get(key);
+    const nextGroup = nextGroupMap.get(key);
+
+    if (!nextGroup) {
+      removeDashboardGroupCard(key);
+      continue;
+    }
+
+    if (!previousGroup || getDashboardGroupSignature(previousGroup) !== getDashboardGroupSignature(nextGroup)) {
+      patchDashboardGroupCard(nextGroup);
+    }
+  }
+
+  refreshLiveDashboardStats(nextState);
+  ensureLiveDashboardFallback(nextState);
+}
+
+function scheduleDashboardRefresh() {
+  if (dashboardRefreshTimer) clearTimeout(dashboardRefreshTimer);
+  dashboardRefreshTimer = setTimeout(runScheduledDashboardRefresh, DASHBOARD_REFRESH_DEBOUNCE_MS);
+}
+
+async function runScheduledDashboardRefresh() {
+  dashboardRefreshTimer = null;
+
+  if (dashboardRefreshInFlight) {
+    dashboardRefreshQueued = true;
+    return;
+  }
+
+  dashboardRefreshInFlight = true;
+  try {
+    await syncDashboardFromChromeSnapshot();
+  } catch (err) {
+    console.error('[tab-out] Failed to refresh dashboard from tab event:', err);
+  } finally {
+    dashboardRefreshInFlight = false;
+
+    if (dashboardRefreshQueued) {
+      dashboardRefreshQueued = false;
+      scheduleDashboardRefresh();
+    }
+  }
+}
+
+function bindLiveDashboardRefresh() {
+  if (typeof chrome === 'undefined' || !chrome.tabs) return;
+
+  const refresh = () => scheduleDashboardRefresh();
+
+  chrome.tabs.onCreated.addListener(refresh);
+  chrome.tabs.onRemoved.addListener(refresh);
+  chrome.tabs.onMoved.addListener(refresh);
+  chrome.tabs.onAttached.addListener(refresh);
+  chrome.tabs.onDetached.addListener(refresh);
+  chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
+    if (
+      changeInfo.status ||
+      changeInfo.url ||
+      changeInfo.title ||
+      changeInfo.favIconUrl ||
+      Object.prototype.hasOwnProperty.call(changeInfo, 'groupId')
+    ) {
+      refresh();
+    }
+  });
+
+  if (chrome.tabGroups) {
+    chrome.tabGroups.onCreated?.addListener(refresh);
+    chrome.tabGroups.onRemoved?.addListener(refresh);
+    chrome.tabGroups.onUpdated?.addListener(refresh);
+    chrome.tabGroups.onMoved?.addListener(refresh);
+  }
 }
 
 function canTargetAcceptPayload(targetId, payload) {
@@ -1845,6 +2530,16 @@ function getInteractionTarget(targetId) {
       actionId: 'move-to-chrome-group',
       dropEffect: 'move',
       chromeGroupId,
+    };
+  }
+
+  const pendingGroupId = getPendingGroupIdFromDropTarget(targetId);
+  if (pendingGroupId) {
+    return {
+      accepts: new Set([INTERACTION_KINDS.tabLink]),
+      actionId: 'move-to-pending-group',
+      dropEffect: 'move',
+      pendingGroupId,
     };
   }
 
@@ -1878,15 +2573,16 @@ function clearDragState() {
 
 const INTERACTION_ACTIONS = {
   'save-for-later': async (payload) => {
-    await saveTabForLater({ url: payload.url, title: payload.title });
+    await saveTabForLater({ url: payload.url, title: payload.title, faviconUrl: payload.faviconUrl });
     await closeSingleTabByIdOrUrl(parseDatasetInt(payload.tabId), payload.url);
     await fetchOpenTabs();
+    reflectRemovedTabInDashboard(payload);
     showToast('Saved for later');
-    await renderDashboard();
+    await renderSidebarColumn();
     return true;
   },
   'save-common-url': async (payload) => {
-    const result = await saveFavoriteLink({ url: payload.url, title: payload.title });
+    const result = await saveFavoriteLink({ url: payload.url, title: payload.title, faviconUrl: payload.faviconUrl });
     showToast(result.status === 'existing' ? 'Already in common urls' : 'Added to common urls');
     await renderSidebarColumn();
     return true;
@@ -1902,8 +2598,19 @@ const INTERACTION_ACTIONS = {
       return false;
     }
     const targetLabel = getChromeGroupLabel(result.targetGroup);
+    reflectMovedTabInDashboard(payload, result.targetGroup);
     showToast(`Moved tab to ${targetLabel}`);
-    await renderDashboard();
+    return true;
+  },
+  'move-to-pending-group': async (payload, target) => {
+    const result = await moveTabToPendingChromeGroup(payload, target.pendingGroupId);
+    if (!result.moved) {
+      showToast('Could not create group');
+      return false;
+    }
+    const targetLabel = getChromeGroupLabel(result.targetGroup);
+    reflectMovedTabInDashboard(payload, result.targetGroup, target.pendingGroupId);
+    showToast(`Created ${targetLabel}`);
     return true;
   },
 };
@@ -1986,6 +2693,13 @@ document.addEventListener('dragend', () => {
   clearDragState();
 });
 
+document.addEventListener('dblclick', (e) => {
+  const titleEl = e.target.closest('[data-group-title]');
+  if (!titleEl) return;
+  e.preventDefault();
+  beginInlineGroupRename(titleEl);
+});
+
 document.addEventListener('click', async (e) => {
   // Walk up the DOM to find the nearest element with data-action
   const actionEl = e.target.closest('[data-action]');
@@ -2021,7 +2735,6 @@ document.addEventListener('click', async (e) => {
     const density = actionEl.dataset.density;
     if (!DOCK_DENSITY_OPTIONS.has(density)) return;
     await saveDockPreferences({ density });
-    await renderDashboard();
     showToast(`Density set to ${density}`);
     return;
   }
@@ -2047,7 +2760,7 @@ document.addEventListener('click', async (e) => {
   if (action === 'set-sidebar-visibility') {
     const showSidebar = actionEl.dataset.sidebar !== 'hide';
     await saveDockPreferences({ showSidebar });
-    await renderDashboard();
+    await renderSidebarColumn();
     showToast(showSidebar ? 'Sidebar shown' : 'Sidebar hidden');
     return;
   }
@@ -2069,6 +2782,56 @@ document.addEventListener('click', async (e) => {
       setTimeout(() => { banner.style.display = 'none'; banner.style.opacity = '1'; }, 400);
     }
     showToast('Closed extra Tab pages');
+    return;
+  }
+
+  if (action === 'create-pending-group') {
+    try {
+      const title = getNextPendingGroupTitle();
+      const group = await createPendingChromeGroup(title);
+      insertPendingGroupCard(group);
+      showToast('Group ready');
+    } catch (err) {
+      console.error('[tab-out] Failed to create empty group:', err);
+      showToast('Could not create group');
+    }
+    return;
+  }
+
+  if (action === 'remove-pending-group') {
+    const groupId = actionEl.dataset.pendingGroupId;
+    if (!groupId) return;
+    await removePendingChromeGroup(groupId);
+    removePendingGroupCard(groupId);
+    showToast('Group removed');
+    return;
+  }
+
+  if (action === 'cycle-chrome-group-color') {
+    const groupId = parseDatasetInt(actionEl.dataset.chromeGroupId);
+    if (!Number.isInteger(groupId)) return;
+    const card = actionEl.closest('.mission-card');
+    const nextColor = getNextChromeGroupColor(card?.dataset.groupColor || getChromeGroupById(groupId)?.color);
+
+    try {
+      const group = await updateChromeGroupColor(groupId, nextColor);
+      applyGroupColorToCard(card, group?.color || nextColor);
+      showToast('Group color changed');
+    } catch (err) {
+      console.error('[tab-out] Failed to change group color:', err);
+      showToast('Could not change group color');
+    }
+    return;
+  }
+
+  if (action === 'cycle-pending-group-color') {
+    const groupId = actionEl.dataset.pendingGroupId;
+    if (!groupId) return;
+    const card = actionEl.closest('.mission-card');
+    const nextColor = getNextChromeGroupColor(card?.dataset.groupColor);
+    await updatePendingChromeGroupColor(groupId, nextColor);
+    applyGroupColorToCard(card, nextColor);
+    showToast('Group color changed');
     return;
   }
 
@@ -2172,7 +2935,7 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
-  // ---- Check off a saved tab (moves it to archive) ----
+  // ---- Check off a saved tab (removes it) ----
   if (action === 'check-deferred') {
     const id = actionEl.dataset.deferredId;
     if (!id) return;
@@ -2187,7 +2950,7 @@ document.addEventListener('click', async (e) => {
         item.classList.add('removing');
         setTimeout(() => {
           item.remove();
-          renderSidebarColumn(); // refresh counts and archive
+          renderSidebarColumn();
         }, 300);
       }, 800);
     }
@@ -2233,7 +2996,10 @@ document.addEventListener('click', async (e) => {
 
     try {
       const count = await closeChromeGroupTabs(groupId);
-      await renderDashboard();
+      if (card) animateCardOut(card);
+      const statTabsHeader = document.getElementById('statTabsHeader');
+      if (statTabsHeader) statTabsHeader.textContent = openTabs.length;
+      setTimeout(refreshSectionCountText, 320);
       showToast(count > 0 ? `Closed ${count} grouped tab${count !== 1 ? 's' : ''}` : 'Group is already empty');
     } catch (err) {
       console.error('[tab-out] Failed to close Chrome group tabs:', err);
@@ -2372,54 +3138,34 @@ document.addEventListener('click', async (e) => {
   }
 });
 
-// ---- Archive toggle — expand/collapse the archive section ----
-document.addEventListener('click', (e) => {
-  const toggle = e.target.closest('#archiveToggle');
-  if (!toggle) return;
-
-  toggle.classList.toggle('open');
-  const body = document.getElementById('archiveBody');
-  if (body) {
-    body.style.display = body.style.display === 'none' ? 'block' : 'none';
-  }
-});
-
-// ---- Archive search — filter archived items as user types ----
 document.addEventListener('input', async (e) => {
-  if (e.target.id === 'dockColorInput') {
-    await saveThemeColor(e.target.value);
+  if (e.target.classList?.contains('group-title-input')) {
+    fitGroupTitleInput(e.target);
     return;
   }
 
-  if (e.target.id !== 'archiveSearch') return;
-
-  const q = e.target.value.trim().toLowerCase();
-  const archiveList = document.getElementById('archiveList');
-  if (!archiveList) return;
-
-  try {
-    const { archived } = await getSavedTabs();
-
-    if (q.length < 2) {
-      // Show all archived items
-      archiveList.innerHTML = archived.map(item => renderArchiveItem(item)).join('');
-      return;
-    }
-
-    // Filter by title or URL containing the query string
-    const results = archived.filter(item =>
-      (item.title || '').toLowerCase().includes(q) ||
-      (item.url  || '').toLowerCase().includes(q)
-    );
-
-    archiveList.innerHTML = results.map(item => renderArchiveItem(item)).join('')
-      || '<div style="font-size:12px;color:var(--muted);padding:8px 0">No results</div>';
-  } catch (err) {
-    console.warn('[tab-out] Archive search failed:', err);
+  if (e.target.id === 'dockColorInput') {
+    await saveThemeColor(e.target.value);
   }
 });
 
+document.addEventListener('focusout', async (e) => {
+  if (!e.target.classList?.contains('group-title-input')) return;
+  await commitInlineGroupRename(e.target, true);
+});
+
 document.addEventListener('keydown', (e) => {
+  if (e.target.classList?.contains('group-title-input')) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      e.target.blur();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      commitInlineGroupRename(e.target, false);
+    }
+    return;
+  }
+
   if (e.key !== 'Escape') return;
   const dockControl = document.getElementById('dockControl');
   if (dockControl) dockControl.classList.remove('open');
@@ -2430,4 +3176,7 @@ document.addEventListener('keydown', (e) => {
    INITIALIZE
    ---------------------------------------------------------------- */
 loadThemeColor();
-loadDockPreferences().then(renderDashboard);
+loadDockPreferences()
+  .then(renderDashboard)
+  .then(bindLiveDashboardRefresh)
+  .catch(err => console.error('[tab-out] Failed to initialize dashboard:', err));

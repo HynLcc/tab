@@ -19,12 +19,14 @@
   --status-abandoned: #b35a5a;
   --card-bg: #fffdf9;
   --shadow: rgba(26, 22, 19, 0.06);
+  --font-ui: 'DM Sans', sans-serif;
+  --font-display: 'Newsreader', serif;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-ui);
   background: var(--browser-accent);
   color: var(--ink);
   min-height: 100vh;
@@ -67,7 +69,7 @@ header {
 }
 
 .header-left h1 {
-  font-family: 'Newsreader', serif;
+  font-family: var(--font-display);
   font-weight: 300;
   font-size: 28px;
   font-style: italic;
@@ -77,7 +79,7 @@ header {
 }
 
 .header-left .date {
-  font-family: 'Newsreader', serif;
+  font-family: var(--font-display);
   font-size: 14px;
   color: var(--muted);
   font-weight: 400;
@@ -155,7 +157,7 @@ header {
 }
 
 .tab-cleanup-btn {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-ui);
   font-size: 12px;
   font-weight: 600;
   padding: 8px 20px;
@@ -223,7 +225,7 @@ header {
 
 .section-header h2,
 .sidebar-heading {
-  font-family: 'Newsreader', serif;
+  font-family: var(--font-display);
   font-weight: 400;
   font-size: 18px;
   font-style: italic;
@@ -249,7 +251,7 @@ header {
 }
 
 .section-count-text {
-  font-family: 'Newsreader', serif;
+  font-family: var(--font-display);
   font-size: 18px;
   font-style: italic;
   font-weight: 400;
@@ -279,8 +281,8 @@ header {
   cursor: pointer;
   position: relative;
   overflow: hidden;
-  break-inside: avoid;       /* don't split a card across columns */
-  margin-bottom: 12px;       /* vertical spacing (replaces grid gap) */
+  break-inside: avoid;
+  margin-bottom: 12px;
 }
 
 /* Colored top border instead of side bar for grid cards */
@@ -359,12 +361,37 @@ body.is-dragging-tab .mission-card.chrome-group-card[data-drop-target] {
 }
 
 .mission-name {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-ui);
   font-weight: 500;
   font-size: 15px;
   line-height: 1.08;
   color: var(--ink);
   letter-spacing: -0.2px;
+}
+
+.mission-name[data-group-title] {
+  cursor: text;
+  border-radius: 4px;
+  padding: 1px 3px;
+  margin: -1px -3px;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.mission-name[data-group-title]:hover,
+.mission-name.is-editing-title {
+  background: rgba(var(--group-accent-rgb, 90, 107, 122), 0.08);
+  box-shadow: inset 0 0 0 1px rgba(var(--group-accent-rgb, 90, 107, 122), 0.16);
+}
+
+.group-title-input {
+  max-width: 190px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  letter-spacing: inherit;
+  padding: 0;
 }
 
 .mission-tag {
@@ -394,17 +421,48 @@ body.is-dragging-tab .mission-card.chrome-group-card[data-drop-target] {
 .chrome-group-swatch {
   width: 10px;
   height: 10px;
+  padding: 0;
+  border: 0;
   border-radius: 999px;
   background: var(--group-accent, var(--accent-slate));
   box-shadow:
     0 0 0 4px rgba(var(--group-accent-rgb, 90, 107, 122), 0.08),
     inset 0 0 0 1px rgba(255, 255, 255, 0.62);
+  cursor: pointer;
   flex: 0 0 auto;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.chrome-group-swatch:hover,
+.chrome-group-swatch:focus-visible {
+  transform: scale(1.12);
+  box-shadow:
+    0 0 0 6px rgba(var(--group-accent-rgb, 90, 107, 122), 0.12),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.72);
+  outline: none;
 }
 
 .chrome-group-state {
   color: var(--group-accent, var(--accent-slate));
   background: rgba(var(--group-accent-rgb, 90, 107, 122), 0.08);
+}
+
+.pending-group-card {
+  border-style: dashed;
+}
+
+.pending-group-hint {
+  min-height: 54px;
+  border: 1px dashed rgba(var(--group-accent-rgb, 90, 107, 122), 0.24);
+  border-radius: 6px;
+  color: var(--muted);
+  background: rgba(var(--group-accent-rgb, 90, 107, 122), 0.035);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 14px;
 }
 
 /* Tab indicator badge — shows how many Chrome tabs are still open for this mission */
@@ -460,6 +518,13 @@ body.is-dragging-tab .mission-card.chrome-group-card[data-drop-target] {
 }
 
 /* Favicon */
+.chip-favicon,
+.favorite-favicon,
+.deferred-favicon {
+  object-fit: contain;
+  image-rendering: auto;
+}
+
 .chip-favicon {
   width: 16px;
   height: 16px;
@@ -574,7 +639,7 @@ body.is-dragging-tab .mission-card.chrome-group-card[data-drop-target] {
 
 .mission-page-count {
   font-size: 20px;
-  font-family: 'Newsreader', serif;
+  font-family: var(--font-display);
   font-weight: 300;
   color: var(--ink);
   line-height: 1;
@@ -593,11 +658,12 @@ body.is-dragging-tab .mission-card.chrome-group-card[data-drop-target] {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
+  justify-content: flex-end;
 }
 
 .action-btn {
   font-size: 11px;
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-ui);
   font-weight: 500;
   padding: 5px 14px;
   border-radius: 4px;
@@ -693,7 +759,7 @@ body.is-dragging-tab .mission-card.chrome-group-card[data-drop-target] {
   transform: translateX(-50%) translateY(80px);
   background: var(--ink);
   color: var(--paper);
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-ui);
   font-size: 13px;
   font-weight: 500;
   padding: 12px 24px;
@@ -735,7 +801,7 @@ footer {
 .dock-reset,
 .dock-more,
 .dock-chip {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-ui);
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
@@ -1018,7 +1084,7 @@ body.hide-deferred-column .deferred-column {
 }
 
 .stat-num {
-  font-family: 'Newsreader', serif;
+  font-family: var(--font-display);
   font-size: 28px;
   font-weight: 300;
   font-style: italic;
@@ -1028,7 +1094,7 @@ body.hide-deferred-column .deferred-column {
 }
 
 .stat-label {
-  font-family: 'Newsreader', serif;
+  font-family: var(--font-display);
   font-size: 14px;
   font-style: italic;
   text-transform: uppercase;
@@ -1043,7 +1109,7 @@ body.hide-deferred-column .deferred-column {
 }
 
 .refresh-btn {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-ui);
   font-size: 11px;
   font-weight: 500;
   color: var(--accent-amber);
@@ -1152,7 +1218,7 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
 }
 
 .empty-title {
-  font-family: 'Newsreader', serif;
+  font-family: var(--font-display);
   font-size: 20px;
   font-weight: 400;
   font-style: italic;
@@ -1236,7 +1302,7 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
 
 /* "Update now" button — small, filled, sage green */
 .update-banner-btn {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-ui);
   font-size: 12px;
   font-weight: 500;
   color: #fff;
@@ -1288,7 +1354,7 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
 
 
 /* ================================================================
-   SAVED FOR LATER — Checklist Column + Archive
+   SAVED FOR LATER — Checklist Column
    ================================================================ */
 
 /* ---- Two-column layout ---- */
@@ -1448,6 +1514,14 @@ body.is-dragging-tab .sidebar-panel[data-drop-target] {
   height: 14px;
   border-radius: 3px;
   flex-shrink: 0;
+}
+
+.deferred-favicon {
+  width: 14px;
+  height: 14px;
+  margin-right: 4px;
+  border-radius: 3px;
+  vertical-align: -2px;
 }
 
 .favorite-link-text {
@@ -1616,110 +1690,4 @@ body.is-dragging-tab .sidebar-panel[data-drop-target] {
 /* ---- Empty state ---- */
 .deferred-empty {
   text-align: left;
-}
-
-/* ---- Archive section ---- */
-.deferred-archive {
-  margin-top: 16px;
-  padding-top: 12px;
-  border-top: 1px solid var(--warm-gray);
-}
-
-.archive-toggle {
-  font-family: 'DM Sans', sans-serif;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--muted);
-  background: none;
-  border: none;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 0;
-  width: 100%;
-  text-align: left;
-  transition: color 0.15s;
-}
-
-.archive-toggle:hover {
-  color: var(--ink);
-}
-
-.archive-chevron {
-  width: 14px;
-  height: 14px;
-  transition: transform 0.2s;
-}
-
-.archive-toggle.open .archive-chevron {
-  transform: rotate(180deg);
-}
-
-.archive-count {
-  font-size: 11px;
-  color: var(--muted);
-  opacity: 0.7;
-}
-
-.archive-body {
-  padding-top: 12px;
-}
-
-.archive-search {
-  font-family: 'DM Sans', sans-serif;
-  font-size: 12px;
-  width: 100%;
-  padding: 8px 12px;
-  border: 1px solid var(--warm-gray);
-  border-radius: 6px;
-  background: var(--card-bg);
-  color: var(--ink);
-  outline: none;
-  transition: border-color 0.2s;
-  margin-bottom: 12px;
-}
-
-.archive-search:focus {
-  border-color: var(--accent-amber);
-}
-
-.archive-search::placeholder {
-  color: var(--muted);
-}
-
-/* Archive items are simpler — just title + domain + date */
-.archive-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 0;
-  border-bottom: 1px solid rgba(154, 145, 138, 0.08);
-}
-
-.archive-item:last-child {
-  border-bottom: none;
-}
-
-.archive-item-title {
-  font-size: 12px;
-  color: var(--muted);
-  text-decoration: none;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-  min-width: 0;
-  transition: color 0.15s;
-}
-
-.archive-item-title:hover {
-  color: var(--ink);
-}
-
-.archive-item-date {
-  font-size: 10px;
-  color: var(--muted);
-  opacity: 0.6;
-  flex-shrink: 0;
 }
