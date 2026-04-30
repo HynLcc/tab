@@ -50,12 +50,16 @@ const INTERACTION_TARGETS = {
   },
 };
 const CHROME_TAB_GROUP_NONE = -1;
+const DASHBOARD_REFRESH_DEBOUNCE_MS = 150;
 const CHROME_GROUP_DROP_PREFIX = 'chrome-group-';
 const PENDING_GROUP_DROP_PREFIX = 'pending-group-';
 let dockPreferences = { ...DEFAULT_DOCK_PREFERENCES };
 let sidebarPanelState = { ...DEFAULT_SIDEBAR_PANEL_STATE };
 let activeDragPayload = null;
 let activeDragSource = null;
+let dashboardRefreshTimer = null;
+let dashboardRefreshInFlight = false;
+let dashboardRefreshQueued = false;
 
 
 /* ----------------------------------------------------------------
@@ -69,6 +73,40 @@ let activeDragSource = null;
 let openTabs = [];
 let chromeTabGroups = [];
 let pendingChromeGroups = [];
+
+function normalizeChromeTab(t, extensionId = '') {
+  const newtabUrl = `chrome-extension://${extensionId}/index.html`;
+
+  return {
+    id:       t.id,
+    url:      t.url,
+    title:    t.title,
+    windowId: t.windowId,
+    index:    t.index,
+    groupId:  Number.isInteger(t.groupId) ? t.groupId : CHROME_TAB_GROUP_NONE,
+    active:   t.active,
+    favIconUrl: t.favIconUrl,
+    // Flag Tab Out's own pages so we can detect duplicate new tabs
+    isTabOut: t.url === newtabUrl || t.url === 'chrome://newtab/',
+  };
+}
+
+async function readChromeSnapshot() {
+  const extensionId = chrome.runtime.id;
+  const tabs = await chrome.tabs.query({});
+  let groups = [];
+
+  try {
+    groups = chrome.tabGroups?.query ? await chrome.tabGroups.query({}) : [];
+  } catch {
+    groups = [];
+  }
+
+  return {
+    tabs: tabs.map(t => normalizeChromeTab(t, extensionId)),
+    groups,
+  };
+}
 
 function normalizeHexColor(value) {
   if (typeof value !== 'string') return DEFAULT_THEME_COLOR;
@@ -232,28 +270,9 @@ async function resetThemeColor() {
  */
 async function fetchOpenTabs() {
   try {
-    const extensionId = chrome.runtime.id;
-    // The new URL for this page is now index.html (not newtab.html)
-    const newtabUrl = `chrome-extension://${extensionId}/index.html`;
-
-    const tabs = await chrome.tabs.query({});
-    try {
-      chromeTabGroups = chrome.tabGroups?.query ? await chrome.tabGroups.query({}) : [];
-    } catch {
-      chromeTabGroups = [];
-    }
-
-    openTabs = tabs.map(t => ({
-      id:       t.id,
-      url:      t.url,
-      title:    t.title,
-      windowId: t.windowId,
-      index:    t.index,
-      groupId:  Number.isInteger(t.groupId) ? t.groupId : CHROME_TAB_GROUP_NONE,
-      active:   t.active,
-      // Flag Tab Out's own pages so we can detect duplicate new tabs
-      isTabOut: t.url === newtabUrl || t.url === 'chrome://newtab/',
-    }));
+    const snapshot = await readChromeSnapshot();
+    openTabs = snapshot.tabs;
+    chromeTabGroups = snapshot.groups;
   } catch {
     // chrome.tabs API unavailable (shouldn't happen in an extension page)
     openTabs = [];
@@ -915,6 +934,14 @@ const ICONS = {
    IN-MEMORY STORE FOR OPEN-TAB GROUPS
    ---------------------------------------------------------------- */
 let domainGroups = [];
+const BASE_LANDING_PAGE_PATTERNS = [
+  { hostname: 'mail.google.com', test: (p, h) =>
+      !h.includes('#inbox/') && !h.includes('#sent/') && !h.includes('#search/') },
+  { hostname: 'x.com',               pathExact: ['/home'] },
+  { hostname: 'www.linkedin.com',    pathExact: ['/'] },
+  { hostname: 'github.com',          pathExact: ['/'] },
+  { hostname: 'www.youtube.com',     pathExact: ['/'] },
+];
 const TAB_GROUP_COLORS = ['blue', 'cyan', 'green', 'orange', 'pink', 'purple', 'red', 'yellow'];
 const CHROME_GROUP_COLOR_ORDER = ['grey', ...TAB_GROUP_COLORS];
 const CHROME_GROUP_COLOR_HEX = {
@@ -957,6 +984,113 @@ function getPendingGroupIdFromDropTarget(targetId) {
 
 function getChromeGroupById(groupId) {
   return chromeTabGroups.find(group => group.id === groupId) || null;
+}
+
+function getLandingPagePatterns() {
+  const localPatterns = typeof LOCAL_LANDING_PAGE_PATTERNS !== 'undefined' ? LOCAL_LANDING_PAGE_PATTERNS : [];
+  return [...BASE_LANDING_PAGE_PATTERNS, ...localPatterns];
+}
+
+function isLandingPageUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return getLandingPagePatterns().some(p => {
+      const hostnameMatch = p.hostname
+        ? parsed.hostname === p.hostname
+        : p.hostnameEndsWith
+          ? parsed.hostname.endsWith(p.hostnameEndsWith)
+          : false;
+      if (!hostnameMatch) return false;
+      if (p.test)       return p.test(parsed.pathname, url);
+      if (p.pathPrefix) return parsed.pathname.startsWith(p.pathPrefix);
+      if (p.pathExact)  return p.pathExact.includes(parsed.pathname);
+      return parsed.pathname === '/';
+    });
+  } catch {
+    return false;
+  }
+}
+
+function matchCustomGroup(url) {
+  const customGroups = typeof LOCAL_CUSTOM_GROUPS !== 'undefined' ? LOCAL_CUSTOM_GROUPS : [];
+
+  try {
+    const parsed = new URL(url);
+    return customGroups.find(r => {
+      const hostMatch = r.hostname
+        ? parsed.hostname === r.hostname
+        : r.hostnameEndsWith
+          ? parsed.hostname.endsWith(r.hostnameEndsWith)
+          : false;
+      if (!hostMatch) return false;
+      if (r.pathPrefix) return parsed.pathname.startsWith(r.pathPrefix);
+      return true;
+    }) || null;
+  } catch {
+    return null;
+  }
+}
+
+function getDomainGroupSeedForTab(tab) {
+  if (isLandingPageUrl(tab.url)) {
+    return { domain: '__landing-pages__' };
+  }
+
+  const customRule = matchCustomGroup(tab.url);
+  if (customRule) {
+    return {
+      domain: customRule.groupKey,
+      label: customRule.groupLabel,
+    };
+  }
+
+  try {
+    const domain = tab.url?.startsWith('file://')
+      ? 'local-files'
+      : new URL(tab.url).hostname;
+    return domain ? { domain } : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildDomainGroupsFromTabs(tabs) {
+  const groupMap = {};
+
+  for (const tab of tabs) {
+    const seed = getDomainGroupSeedForTab(tab);
+    if (!seed?.domain) continue;
+
+    if (!groupMap[seed.domain]) {
+      groupMap[seed.domain] = {
+        domain: seed.domain,
+        ...(seed.label ? { label: seed.label } : {}),
+        tabs: [],
+      };
+    }
+
+    groupMap[seed.domain].tabs.push(tab);
+  }
+
+  const landingPatterns = getLandingPagePatterns();
+  const landingHostnames = new Set(landingPatterns.map(p => p.hostname).filter(Boolean));
+  const landingSuffixes = landingPatterns.map(p => p.hostnameEndsWith).filter(Boolean);
+  const isLandingDomain = domain => {
+    if (landingHostnames.has(domain)) return true;
+    return landingSuffixes.some(s => domain.endsWith(s));
+  };
+
+  return Object.values(groupMap).sort((a, b) => {
+    const aIsLanding = a.domain === '__landing-pages__';
+    const bIsLanding = b.domain === '__landing-pages__';
+    if (aIsLanding !== bIsLanding) return aIsLanding ? -1 : 1;
+
+    const aIsPriority = isLandingDomain(a.domain);
+    const bIsPriority = isLandingDomain(b.domain);
+    if (aIsPriority !== bIsPriority) return aIsPriority ? -1 : 1;
+
+    return b.tabs.length - a.tabs.length;
+  });
 }
 
 function getChromeGroupLabel(group) {
@@ -1006,8 +1140,8 @@ function applyGroupColorToCard(card, color) {
   card.setAttribute('style', getChromeGroupStyle({ color: normalizedColor }));
 }
 
-function buildChromeGroupCards(realTabs) {
-  const byGroupId = new Map(chromeTabGroups.map(group => [
+function buildChromeGroupCards(realTabs, groups = chromeTabGroups) {
+  const byGroupId = new Map(groups.map(group => [
     group.id,
     {
       ...group,
@@ -1032,6 +1166,21 @@ function buildChromeGroupCards(realTabs) {
       if (a.windowId !== b.windowId) return a.windowId - b.windowId;
       return a.firstTabIndex - b.firstTabIndex;
     });
+}
+
+function buildDashboardState(tabs = openTabs, groups = chromeTabGroups) {
+  const realTabs = getRealTabs(tabs);
+  const chromeGroupCards = buildChromeGroupCards(realTabs, groups);
+  const chromeGroupedTabIds = new Set(
+    chromeGroupCards.flatMap(group => group.tabs.map(tab => tab.id))
+  );
+  const ungroupedRealTabs = realTabs.filter(tab => !chromeGroupedTabIds.has(tab.id));
+
+  return {
+    realTabs,
+    chromeGroupCards,
+    domainGroups: buildDomainGroupsFromTabs(ungroupedRealTabs),
+  };
 }
 
 function getDashboardGroupLabel(group) {
@@ -1371,8 +1520,8 @@ function getDisplayedDashboardGroups(groups) {
  * Returns tabs that are real web pages — no chrome://, extension
  * pages, about:blank, etc.
  */
-function getRealTabs() {
-  return openTabs.filter(t => {
+function getRealTabs(tabs = openTabs) {
+  return tabs.filter(t => {
     const url = t.url || '';
     return (
       !url.startsWith('chrome://') &&
@@ -1738,13 +1887,7 @@ function insertPendingGroupCard(group) {
   const emptyState = missionsEl.querySelector('.missions-empty-state');
   if (emptyState) missionsEl.innerHTML = '';
 
-  const firstDomainCard = missionsEl.querySelector('.mission-card.domain-card');
-  if (firstDomainCard) {
-    firstDomainCard.insertAdjacentHTML('beforebegin', renderPendingGroupCard(group));
-  } else {
-    missionsEl.insertAdjacentHTML('beforeend', renderPendingGroupCard(group));
-  }
-
+  missionsEl.insertAdjacentHTML('beforeend', renderPendingGroupCard(group));
   refreshSectionCountText();
 }
 
@@ -2092,124 +2235,8 @@ async function renderStaticDashboard() {
   // --- Fetch tabs ---
   await fetchOpenTabs();
   await loadPendingChromeGroups();
-  const realTabs = getRealTabs();
-  const chromeGroupCards = buildChromeGroupCards(realTabs);
-  const chromeGroupedTabIds = new Set(
-    chromeGroupCards.flatMap(group => group.tabs.map(tab => tab.id))
-  );
-  const ungroupedRealTabs = realTabs.filter(tab => !chromeGroupedTabIds.has(tab.id));
-
-  // --- Group tabs by domain ---
-  // Landing pages (Gmail inbox, Twitter home, etc.) get their own special group
-  // so they can be closed together without affecting content tabs on the same domain.
-  const LANDING_PAGE_PATTERNS = [
-    { hostname: 'mail.google.com', test: (p, h) =>
-        !h.includes('#inbox/') && !h.includes('#sent/') && !h.includes('#search/') },
-    { hostname: 'x.com',               pathExact: ['/home'] },
-    { hostname: 'www.linkedin.com',    pathExact: ['/'] },
-    { hostname: 'github.com',          pathExact: ['/'] },
-    { hostname: 'www.youtube.com',     pathExact: ['/'] },
-    // Merge personal patterns from config.local.js (if it exists)
-    ...(typeof LOCAL_LANDING_PAGE_PATTERNS !== 'undefined' ? LOCAL_LANDING_PAGE_PATTERNS : []),
-  ];
-
-  function isLandingPage(url) {
-    try {
-      const parsed = new URL(url);
-      return LANDING_PAGE_PATTERNS.some(p => {
-        // Support both exact hostname and suffix matching (for wildcard subdomains)
-        const hostnameMatch = p.hostname
-          ? parsed.hostname === p.hostname
-          : p.hostnameEndsWith
-            ? parsed.hostname.endsWith(p.hostnameEndsWith)
-            : false;
-        if (!hostnameMatch) return false;
-        if (p.test)       return p.test(parsed.pathname, url);
-        if (p.pathPrefix) return parsed.pathname.startsWith(p.pathPrefix);
-        if (p.pathExact)  return p.pathExact.includes(parsed.pathname);
-        return parsed.pathname === '/';
-      });
-    } catch { return false; }
-  }
-
-  domainGroups = [];
-  const groupMap    = {};
-  const landingTabs = [];
-
-  // Custom group rules from config.local.js (if any)
-  const customGroups = typeof LOCAL_CUSTOM_GROUPS !== 'undefined' ? LOCAL_CUSTOM_GROUPS : [];
-
-  // Check if a URL matches a custom group rule; returns the rule or null
-  function matchCustomGroup(url) {
-    try {
-      const parsed = new URL(url);
-      return customGroups.find(r => {
-        const hostMatch = r.hostname
-          ? parsed.hostname === r.hostname
-          : r.hostnameEndsWith
-            ? parsed.hostname.endsWith(r.hostnameEndsWith)
-            : false;
-        if (!hostMatch) return false;
-        if (r.pathPrefix) return parsed.pathname.startsWith(r.pathPrefix);
-        return true; // hostname matched, no path filter
-      }) || null;
-    } catch { return null; }
-  }
-
-  for (const tab of ungroupedRealTabs) {
-    try {
-      if (isLandingPage(tab.url)) {
-        landingTabs.push(tab);
-        continue;
-      }
-
-      // Check custom group rules first (e.g. merge subdomains, split by path)
-      const customRule = matchCustomGroup(tab.url);
-      if (customRule) {
-        const key = customRule.groupKey;
-        if (!groupMap[key]) groupMap[key] = { domain: key, label: customRule.groupLabel, tabs: [] };
-        groupMap[key].tabs.push(tab);
-        continue;
-      }
-
-      let hostname;
-      if (tab.url && tab.url.startsWith('file://')) {
-        hostname = 'local-files';
-      } else {
-        hostname = new URL(tab.url).hostname;
-      }
-      if (!hostname) continue;
-
-      if (!groupMap[hostname]) groupMap[hostname] = { domain: hostname, tabs: [] };
-      groupMap[hostname].tabs.push(tab);
-    } catch {
-      // Skip malformed URLs
-    }
-  }
-
-  if (landingTabs.length > 0) {
-    groupMap['__landing-pages__'] = { domain: '__landing-pages__', tabs: landingTabs };
-  }
-
-  // Sort: landing pages first, then domains from landing page sites, then by tab count
-  // Collect exact hostnames and suffix patterns for priority sorting
-  const landingHostnames = new Set(LANDING_PAGE_PATTERNS.map(p => p.hostname).filter(Boolean));
-  const landingSuffixes = LANDING_PAGE_PATTERNS.map(p => p.hostnameEndsWith).filter(Boolean);
-  function isLandingDomain(domain) {
-    if (landingHostnames.has(domain)) return true;
-    return landingSuffixes.some(s => domain.endsWith(s));
-  }
-  domainGroups = Object.values(groupMap).sort((a, b) => {
-    const aIsLanding = a.domain === '__landing-pages__';
-    const bIsLanding = b.domain === '__landing-pages__';
-    if (aIsLanding !== bIsLanding) return aIsLanding ? -1 : 1;
-
-    const aIsPriority = isLandingDomain(a.domain);
-    const bIsPriority = isLandingDomain(b.domain);
-    if (aIsPriority !== bIsPriority) return aIsPriority ? -1 : 1;
-
-    return b.tabs.length - a.tabs.length;
-  });
+  const { realTabs, chromeGroupCards, domainGroups: nextDomainGroups } = buildDashboardState(openTabs, chromeTabGroups);
+  domainGroups = nextDomainGroups;
 
   // --- Render domain cards ---
   const openTabsSection      = document.getElementById('openTabsSection');
@@ -2263,6 +2290,227 @@ async function renderStaticDashboard() {
 
 async function renderDashboard() {
   await renderStaticDashboard();
+}
+
+function getLiveDashboardGroups(state) {
+  return [...state.chromeGroupCards, ...state.domainGroups];
+}
+
+function getDashboardGroupKey(group) {
+  if (group.kind === 'chrome-group') return `chrome:${group.id}`;
+  if (group.kind === 'pending-group') return `pending:${group.id}`;
+  return `domain:${getStableDomainId(group.domain)}`;
+}
+
+function getDashboardGroupCardByKey(key) {
+  const [kind, id] = String(key || '').split(':');
+  if (!kind || !id) return null;
+
+  if (kind === 'chrome') {
+    return document.querySelector(`.mission-card[data-chrome-group-id="${CSS.escape(id)}"]`);
+  }
+
+  if (kind === 'pending') {
+    return document.querySelector(`.mission-card[data-pending-group-id="${CSS.escape(id)}"]`);
+  }
+
+  return document.querySelector(`.mission-card.domain-card[data-domain-id="${CSS.escape(id)}"]`);
+}
+
+function getDashboardGroupSignature(group) {
+  return JSON.stringify({
+    kind: group.kind || 'domain',
+    id: group.id ?? group.domain,
+    label: getDashboardGroupLabel(group),
+    color: group.color || '',
+    collapsed: !!group.collapsed,
+    tabs: (group.tabs || []).map(tab => [
+      tab.id,
+      tab.url,
+      tab.title,
+      tab.favIconUrl || tab.faviconUrl || '',
+      tab.windowId,
+      tab.index,
+      tab.groupId,
+    ]),
+  });
+}
+
+function indexDashboardGroups(groups) {
+  return new Map(groups.map(group => [getDashboardGroupKey(group), group]));
+}
+
+function shouldDisplayDashboardGroup(group) {
+  return getDisplayedDashboardGroups([group]).length > 0;
+}
+
+function appendDashboardGroupCard(html) {
+  const missionsEl = document.getElementById('openTabsMissions');
+  if (!missionsEl) return false;
+
+  if (!missionsEl.querySelector('.mission-card')) {
+    missionsEl.innerHTML = '';
+  }
+
+  missionsEl.insertAdjacentHTML('beforeend', html);
+  return true;
+}
+
+function patchDashboardGroupCard(group) {
+  const key = getDashboardGroupKey(group);
+  const card = getDashboardGroupCardByKey(key);
+
+  if (!shouldDisplayDashboardGroup(group)) {
+    if (card) card.remove();
+    return true;
+  }
+
+  const html = renderDashboardGroupCard(group);
+  if (card) {
+    card.outerHTML = html;
+    return true;
+  }
+
+  return appendDashboardGroupCard(html);
+}
+
+function removeDashboardGroupCard(key) {
+  const card = getDashboardGroupCardByKey(key);
+  if (card) card.remove();
+}
+
+function refreshLiveDashboardStats(state) {
+  const statTabsHeader = document.getElementById('statTabsHeader');
+  if (statTabsHeader) statTabsHeader.textContent = openTabs.length;
+
+  const closeAllButton = document.querySelector('[data-action="close-all-open-tabs"]');
+  if (closeAllButton) {
+    closeAllButton.innerHTML = `${ICONS.close} Close all ${state.realTabs.length} tab${state.realTabs.length !== 1 ? 's' : ''}`;
+  }
+
+  const groupAllButton = document.querySelector('[data-action="group-all-domain-tabs"]');
+  if (groupAllButton) {
+    const displayedDomainGroups = getDisplayedDomainGroups(domainGroups);
+    groupAllButton.innerHTML = `${ICONS.group} Group ungrouped ${displayedDomainGroups.length}`;
+    groupAllButton.style.display = displayedDomainGroups.length > 0 ? '' : 'none';
+  }
+
+  refreshSectionCountText();
+  checkTabOutDupes();
+}
+
+function ensureLiveDashboardFallback(state) {
+  const missionsEl = document.getElementById('openTabsMissions');
+  if (!missionsEl || missionsEl.querySelector('.mission-card')) return;
+
+  if (state.realTabs.length === 0 && dockPreferences.filter === 'all') {
+    missionsEl.innerHTML = `
+      <div class="missions-empty-state">
+        <div class="empty-checkmark">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+          </svg>
+        </div>
+        <div class="empty-title">Inbox zero, but for tabs.</div>
+        <div class="empty-subtitle">You're free.</div>
+      </div>
+    `;
+    return;
+  }
+
+  missionsEl.innerHTML = '<div style="font-size:13px;color:var(--muted);padding:12px 0">Nothing matches this dock filter right now.</div>';
+}
+
+async function syncDashboardFromChromeSnapshot() {
+  const previousTabs = openTabs;
+  const previousGroups = chromeTabGroups;
+  const previousState = buildDashboardState(previousTabs, previousGroups);
+  const previousGroupMap = indexDashboardGroups(getLiveDashboardGroups(previousState));
+
+  const snapshot = await readChromeSnapshot();
+  const nextState = buildDashboardState(snapshot.tabs, snapshot.groups);
+  const nextGroupMap = indexDashboardGroups(getLiveDashboardGroups(nextState));
+
+  openTabs = snapshot.tabs;
+  chromeTabGroups = snapshot.groups;
+  domainGroups = nextState.domainGroups;
+
+  const changedKeys = new Set([...previousGroupMap.keys(), ...nextGroupMap.keys()]);
+
+  for (const key of changedKeys) {
+    const previousGroup = previousGroupMap.get(key);
+    const nextGroup = nextGroupMap.get(key);
+
+    if (!nextGroup) {
+      removeDashboardGroupCard(key);
+      continue;
+    }
+
+    if (!previousGroup || getDashboardGroupSignature(previousGroup) !== getDashboardGroupSignature(nextGroup)) {
+      patchDashboardGroupCard(nextGroup);
+    }
+  }
+
+  refreshLiveDashboardStats(nextState);
+  ensureLiveDashboardFallback(nextState);
+}
+
+function scheduleDashboardRefresh() {
+  if (dashboardRefreshTimer) clearTimeout(dashboardRefreshTimer);
+  dashboardRefreshTimer = setTimeout(runScheduledDashboardRefresh, DASHBOARD_REFRESH_DEBOUNCE_MS);
+}
+
+async function runScheduledDashboardRefresh() {
+  dashboardRefreshTimer = null;
+
+  if (dashboardRefreshInFlight) {
+    dashboardRefreshQueued = true;
+    return;
+  }
+
+  dashboardRefreshInFlight = true;
+  try {
+    await syncDashboardFromChromeSnapshot();
+  } catch (err) {
+    console.error('[tab-out] Failed to refresh dashboard from tab event:', err);
+  } finally {
+    dashboardRefreshInFlight = false;
+
+    if (dashboardRefreshQueued) {
+      dashboardRefreshQueued = false;
+      scheduleDashboardRefresh();
+    }
+  }
+}
+
+function bindLiveDashboardRefresh() {
+  if (typeof chrome === 'undefined' || !chrome.tabs) return;
+
+  const refresh = () => scheduleDashboardRefresh();
+
+  chrome.tabs.onCreated.addListener(refresh);
+  chrome.tabs.onRemoved.addListener(refresh);
+  chrome.tabs.onMoved.addListener(refresh);
+  chrome.tabs.onAttached.addListener(refresh);
+  chrome.tabs.onDetached.addListener(refresh);
+  chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
+    if (
+      changeInfo.status ||
+      changeInfo.url ||
+      changeInfo.title ||
+      changeInfo.favIconUrl ||
+      Object.prototype.hasOwnProperty.call(changeInfo, 'groupId')
+    ) {
+      refresh();
+    }
+  });
+
+  if (chrome.tabGroups) {
+    chrome.tabGroups.onCreated?.addListener(refresh);
+    chrome.tabGroups.onRemoved?.addListener(refresh);
+    chrome.tabGroups.onUpdated?.addListener(refresh);
+    chrome.tabGroups.onMoved?.addListener(refresh);
+  }
 }
 
 function canTargetAcceptPayload(targetId, payload) {
@@ -2928,4 +3176,7 @@ document.addEventListener('keydown', (e) => {
    INITIALIZE
    ---------------------------------------------------------------- */
 loadThemeColor();
-loadDockPreferences().then(renderDashboard);
+loadDockPreferences()
+  .then(renderDashboard)
+  .then(bindLiveDashboardRefresh)
+  .catch(err => console.error('[tab-out] Failed to initialize dashboard:', err));
