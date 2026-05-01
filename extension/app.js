@@ -924,6 +924,7 @@ const ICONS = {
   close:   `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>`,
   focus:   `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m4.5 19.5 15-15m0 0H8.25m11.25 0v11.25" /></svg>`,
   group:   `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.9" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 6.75h9m-9 5.25h9m-9 5.25h5.25M4.5 5.25A1.5 1.5 0 0 1 6 3.75h12A1.5 1.5 0 0 1 19.5 5.25v13.5A1.5 1.5 0 0 1 18 20.25H6A1.5 1.5 0 0 1 4.5 18.75V5.25Z" /></svg>`,
+  share2:  `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.9" stroke="currentColor"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><path stroke-linecap="round" stroke-linejoin="round" d="m8.59 13.51 6.83 3.98"></path><path stroke-linecap="round" stroke-linejoin="round" d="m15.41 6.51-6.82 3.98"></path></svg>`,
   plus:    `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 5v14m7-7H5" /></svg>`,
   edit:    `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.9" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L7.582 19.07a4.5 4.5 0 0 1-1.897 1.13L3 21l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l11.932-11.931Z" /></svg>`,
   trash:   `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.9" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166M19.228 5.79 18.16 19.673A2.25 2.25 0 0 1 15.916 21.75H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .563c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" /></svg>`,
@@ -1413,6 +1414,76 @@ async function closeChromeGroupTabs(groupId) {
   return tabIds.length;
 }
 
+function getUniqueExportTabs(tabs = []) {
+  const seen = new Set();
+  return getRealTabs(tabs).filter(tab => {
+    const url = (tab.url || '').trim();
+    if (!url || seen.has(url)) return false;
+    seen.add(url);
+    return true;
+  });
+}
+
+function getExportTabTitle(tab, groupDomain = '') {
+  let label = cleanTitle(smartTitle(stripTitleNoise(tab.title || ''), tab.url), groupDomain);
+
+  try {
+    const parsed = new URL(tab.url);
+    if (parsed.hostname === 'localhost' && parsed.port) {
+      label = `${parsed.port} ${label}`;
+    }
+  } catch {}
+
+  return label || tab.url || 'Untitled';
+}
+
+function escapeMarkdownLinkText(value = '') {
+  return String(value)
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\\/g, '\\\\')
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]');
+}
+
+function escapeMarkdownLinkUrl(value = '') {
+  return String(value)
+    .trim()
+    .replace(/</g, '%3C')
+    .replace(/>/g, '%3E');
+}
+
+function formatGroupLinksAsMarkdown(group) {
+  const tabs = getUniqueExportTabs(group.tabs || []);
+  const groupDomain = group.kind === 'chrome-group' ? '' : group.domain;
+  const title = escapeMarkdownLinkText(getDashboardGroupLabel(group));
+  const lines = tabs.map(tab => {
+    const tabTitle = escapeMarkdownLinkText(getExportTabTitle(tab, groupDomain));
+    const url = escapeMarkdownLinkUrl(tab.url);
+    return `- [${tabTitle}](<${url}>)`;
+  });
+
+  return {
+    text: [`## ${title}`, '', ...lines].join('\n'),
+    count: tabs.length,
+  };
+}
+
+function getCopyableGroupFromAction(actionEl) {
+  const chromeGroupId = parseDatasetInt(actionEl?.dataset?.chromeGroupId);
+  if (Number.isInteger(chromeGroupId)) {
+    return buildChromeGroupCards(getRealTabs(openTabs), chromeTabGroups)
+      .find(group => group.id === chromeGroupId);
+  }
+
+  const domainId = actionEl?.dataset?.domainId;
+  if (domainId) {
+    return domainGroups.find(group => getStableDomainId(group.domain) === domainId);
+  }
+
+  return null;
+}
+
 function getGroupDuplicateMeta(group) {
   const tabs = group.tabs || [];
   const urlCounts = {};
@@ -1649,9 +1720,9 @@ function renderDomainCard(group) {
   // Count duplicates (exact URL match)
   const { urlCounts, duplicateEntries: dupeUrls, hasDupes, duplicateTabs: totalExtras } = getGroupDuplicateMeta(group);
 
-  const tabBadge = `<span class="open-tabs-badge">
+  const tabBadge = `<span class="open-tabs-badge tab-count-badge" title="${tabCount} open tab${tabCount !== 1 ? 's' : ''}" aria-label="${tabCount} open tab${tabCount !== 1 ? 's' : ''}">
     ${ICONS.tabs}
-    ${tabCount} tab${tabCount !== 1 ? 's' : ''} open
+    ${tabCount}
   </span>`;
 
   const dupeBadge = hasDupes
@@ -1674,13 +1745,16 @@ function renderDomainCard(group) {
     + (extraCount > 0 ? buildOverflowChips(uniqueTabs.slice(8), urlCounts, group.domain) : '');
 
   let actionsHtml = `
+    <button class="action-btn share-tabs icon-only" data-action="copy-group-links" data-domain-id="${stableId}" title="Copy links as Markdown" aria-label="Copy links as Markdown">
+      ${ICONS.share2}
+    </button>
     <button class="action-btn group-tabs" data-action="group-domain-tabs" data-domain-id="${stableId}">
       ${ICONS.group}
-      Group tabs
+      Group
     </button>
     <button class="action-btn close-tabs" data-action="close-domain-tabs" data-domain-id="${stableId}">
       ${ICONS.close}
-      Close all ${tabCount} tab${tabCount !== 1 ? 's' : ''}
+      Close all
     </button>`;
 
   if (hasDupes) {
@@ -1718,16 +1792,12 @@ function renderChromeGroupCard(group) {
   const { urlCounts, duplicateEntries: dupeUrls, hasDupes, duplicateTabs: totalExtras } = getGroupDuplicateMeta(group);
   const groupTitle = escapeHtml(getChromeGroupLabel(group));
 
-  const tabBadge = `<span class="open-tabs-badge">
+  const tabBadge = `<span class="open-tabs-badge tab-count-badge" title="${tabCount} open tab${tabCount !== 1 ? 's' : ''}" aria-label="${tabCount} open tab${tabCount !== 1 ? 's' : ''}">
     ${ICONS.tabs}
-    ${tabCount} tab${tabCount !== 1 ? 's' : ''} open
+    ${tabCount}
   </span>`;
 
   const groupSwatch = `<button class="chrome-group-swatch" type="button" data-action="cycle-chrome-group-color" data-chrome-group-id="${group.id}" title="Change group color" aria-label="Change color for ${groupTitle}"></button>`;
-
-  const collapsedBadge = group.collapsed
-    ? `<span class="open-tabs-badge chrome-group-state">collapsed</span>`
-    : '';
 
   const dupeBadge = hasDupes
     ? `<span class="open-tabs-badge" style="color:var(--accent-amber);background:rgba(200,113,58,0.08);">
@@ -1747,13 +1817,16 @@ function renderChromeGroupCard(group) {
     + (extraCount > 0 ? buildOverflowChips(uniqueTabs.slice(8), urlCounts, '') : '');
 
   let actionsHtml = `
+    <button class="action-btn share-tabs icon-only" data-action="copy-group-links" data-chrome-group-id="${group.id}" title="Copy links as Markdown" aria-label="Copy links as Markdown">
+      ${ICONS.share2}
+    </button>
     <button class="action-btn ungroup-tabs" data-action="ungroup-chrome-group" data-chrome-group-id="${group.id}">
       ${ICONS.group}
       Ungroup
     </button>
     <button class="action-btn close-tabs" data-action="close-chrome-group-tabs" data-chrome-group-id="${group.id}">
       ${ICONS.close}
-      Close all ${tabCount} tab${tabCount !== 1 ? 's' : ''}
+      Close all
     </button>`;
 
   if (hasDupes) {
@@ -1772,7 +1845,6 @@ function renderChromeGroupCard(group) {
           <span class="mission-name" data-group-title>${groupTitle}</span>
           ${groupSwatch}
           ${tabBadge}
-          ${collapsedBadge}
           ${dupeBadge}
         </div>
         <div class="mission-pages">${pageChips}</div>
@@ -1830,15 +1902,17 @@ function updateCardTabCount(card, nextCount) {
   const count = Math.max(0, nextCount);
   card.dataset.tabCount = String(count);
 
-  const tabBadge = Array.from(card.querySelectorAll('.open-tabs-badge'))
-    .find(badge => /\btab(s)? open\b/.test(badge.textContent || ''));
+  const tabBadge = card.querySelector('.tab-count-badge');
   if (tabBadge) {
-    tabBadge.innerHTML = `${ICONS.tabs} ${count} tab${count !== 1 ? 's' : ''} open`;
+    const label = `${count} open tab${count !== 1 ? 's' : ''}`;
+    tabBadge.innerHTML = `${ICONS.tabs} ${count}`;
+    tabBadge.setAttribute('title', label);
+    tabBadge.setAttribute('aria-label', label);
   }
 
   const closeButton = card.querySelector('[data-action="close-domain-tabs"], [data-action="close-chrome-group-tabs"]');
   if (closeButton) {
-    closeButton.innerHTML = `${ICONS.close} Close all ${count} tab${count !== 1 ? 's' : ''}`;
+    closeButton.innerHTML = `${ICONS.close} Close all`;
   }
 
   const metaCount = card.querySelector('.mission-page-count');
@@ -2264,7 +2338,7 @@ async function renderStaticDashboard() {
     const groupAllButton = displayedDomainGroups.length > 0
       ? `<button class="action-btn group-tabs" data-action="group-all-domain-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.group} Group ungrouped ${displayedDomainGroups.length}</button>`
       : '';
-    openTabsSectionCount.innerHTML = `<span class="section-count-text">${countParts.join(' / ') || '0 groups'}</span><span class="meta-separator section-separator" aria-hidden="true"></span>${createGroupButton}${groupAllButton}<button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
+    openTabsSectionCount.innerHTML = `<span class="section-count-text">${countParts.join(' / ') || '0 groups'}</span><span class="meta-separator section-separator" aria-hidden="true"></span>${createGroupButton}${groupAllButton}<button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all</button>`;
     openTabsMissionsEl.innerHTML = displayedGroups.map(g => renderDashboardGroupCard(g)).join('');
     openTabsSection.style.display = 'block';
   } else if (openTabsSection) {
@@ -2274,7 +2348,7 @@ async function renderStaticDashboard() {
     const createGroupButton = dockPreferences.filter === 'all'
       ? `<button class="action-btn group-tabs create-group-btn" data-action="create-pending-group" style="font-size:11px;padding:3px 10px;">${ICONS.plus} Group</button>`
       : '';
-    openTabsSectionCount.innerHTML = `<span class="section-count-text">0 groups</span><span class="meta-separator section-separator" aria-hidden="true"></span>${createGroupButton}<button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
+    openTabsSectionCount.innerHTML = `<span class="section-count-text">0 groups</span><span class="meta-separator section-separator" aria-hidden="true"></span>${createGroupButton}<button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all</button>`;
   }
 
   // --- Footer stats ---
@@ -2385,7 +2459,7 @@ function refreshLiveDashboardStats(state) {
 
   const closeAllButton = document.querySelector('[data-action="close-all-open-tabs"]');
   if (closeAllButton) {
-    closeAllButton.innerHTML = `${ICONS.close} Close all ${state.realTabs.length} tab${state.realTabs.length !== 1 ? 's' : ''}`;
+    closeAllButton.innerHTML = `${ICONS.close} Close all`;
   }
 
   const groupAllButton = document.querySelector('[data-action="group-all-domain-tabs"]');
@@ -2843,6 +2917,30 @@ document.addEventListener('click', async (e) => {
     if (overflowContainer) {
       overflowContainer.style.display = 'contents';
       actionEl.remove();
+    }
+    return;
+  }
+
+  if (action === 'copy-group-links') {
+    e.stopPropagation();
+    const group = getCopyableGroupFromAction(actionEl);
+    if (!group) {
+      showToast('Group no longer available');
+      return;
+    }
+
+    const { text, count } = formatGroupLinksAsMarkdown(group);
+    if (count === 0) {
+      showToast('No links to copy');
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast(`Copied ${count} link${count !== 1 ? 's' : ''} as Markdown`);
+    } catch (err) {
+      console.error('[tab-out] Failed to copy group links:', err);
+      showToast('Could not copy links');
     }
     return;
   }

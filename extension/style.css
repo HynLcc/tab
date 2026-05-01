@@ -688,6 +688,15 @@ body.is-dragging-tab .mission-card.chrome-group-card[data-drop-target] {
   height: 12px;
 }
 
+.action-btn.icon-only {
+  width: 34px;
+  min-width: 34px;
+  height: 32px;
+  padding: 0;
+  justify-content: center;
+  gap: 0;
+}
+
 .action-btn.primary {
   background: var(--ink);
   color: var(--paper);
@@ -718,6 +727,22 @@ body.is-dragging-tab .mission-card.chrome-group-card[data-drop-target] {
 .action-btn.group-tabs:hover {
   background: rgba(90, 107, 122, 0.12);
   border-color: var(--accent-slate);
+}
+
+.action-btn.share-tabs {
+  border-color: rgba(90, 122, 98, 0.28);
+  color: var(--accent-sage);
+  background: rgba(90, 122, 98, 0.045);
+}
+
+.action-btn.share-tabs:hover {
+  background: rgba(90, 122, 98, 0.12);
+  border-color: var(--accent-sage);
+}
+
+.action-btn.share-tabs svg {
+  width: 15px;
+  height: 15px;
 }
 
 .action-btn.ungroup-tabs {
